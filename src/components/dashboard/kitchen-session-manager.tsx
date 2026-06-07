@@ -58,6 +58,34 @@ function asNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function NumericInput({ value, onChange, ...props }: any) {
+  const [draft, setDraft] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (draft !== null && asNumber(draft) === Number(value)) {
+      // Keep draft
+    } else {
+      setDraft(null);
+    }
+  }, [value, draft]);
+
+  return (
+    <Input
+      {...props}
+      type="number"
+      value={draft !== null ? draft : (value === 0 && draft !== "0" ? "" : String(value))}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        if (onChange) onChange(e);
+      }}
+      onBlur={(e) => {
+        setDraft(null);
+        if (props.onBlur) props.onBlur(e);
+      }}
+    />
+  );
+}
+
 function createPurchaseLine(item?: MainStoreItem): KitchenPurchaseLine {
   return {
     id: `purchase-line-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1078,13 +1106,13 @@ export function KitchenSessionManager({
                               <Input value={line.unit} onChange={(event) => updatePurchaseLine(line.id, "unit", event.target.value)} disabled={lockStaticPurchaseFields} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.previousBalance} onChange={(event) => updatePurchaseLine(line.id, "previousBalance", event.target.value)} disabled={lockStaticPurchaseFields} />
+                              <NumericInput min="0" value={line.previousBalance} onChange={(event: any) => updatePurchaseLine(line.id, "previousBalance", event.target.value)} disabled={lockStaticPurchaseFields} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.addedQty} onChange={(event) => updatePurchaseLine(line.id, "addedQty", event.target.value)} />
+                              <NumericInput min="0" value={line.addedQty} onChange={(event: any) => updatePurchaseLine(line.id, "addedQty", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.pricePerUnit} onChange={(event) => updatePurchaseLine(line.id, "pricePerUnit", event.target.value)} />
+                              <NumericInput min="0" value={line.pricePerUnit} onChange={(event: any) => updatePurchaseLine(line.id, "pricePerUnit", event.target.value)} />
                             </TableCell>
                             <TableCell className="font-bold">{totalBalance}</TableCell>
                             <TableCell className="font-bold">{formatMoney(amount)}</TableCell>
@@ -1235,16 +1263,16 @@ export function KitchenSessionManager({
                               <Input value={line.unit} onChange={(event) => updateDailyLine(line.id, "unit", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.openingStock} onChange={(event) => updateDailyLine(line.id, "openingStock", event.target.value)} />
+                              <NumericInput min="0" value={line.openingStock} onChange={(event: any) => updateDailyLine(line.id, "openingStock", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.received} onChange={(event) => updateDailyLine(line.id, "received", event.target.value)} />
+                              <NumericInput min="0" value={line.received} onChange={(event: any) => updateDailyLine(line.id, "received", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.used} onChange={(event) => updateDailyLine(line.id, "used", event.target.value)} />
+                              <NumericInput min="0" value={line.used} onChange={(event: any) => updateDailyLine(line.id, "used", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input type="number" min="0" value={line.wastage} onChange={(event) => updateDailyLine(line.id, "wastage", event.target.value)} />
+                              <NumericInput min="0" value={line.wastage} onChange={(event: any) => updateDailyLine(line.id, "wastage", event.target.value)} />
                             </TableCell>
                             <TableCell className="font-bold">{closingStock}</TableCell>
                             <TableCell className="text-right">

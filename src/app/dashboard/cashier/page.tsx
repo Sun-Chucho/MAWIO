@@ -664,7 +664,7 @@ export default function BookingPage() {
     const booking = selectedExtendBooking;
     if (!booking) return;
 
-    if (!extendCheckoutIsLater || extendAddedNights < 1) return;
+    if (!extendCheckoutIsLater) return;
 
     const approved = await confirm({
       title: "Extend Stay",
@@ -683,7 +683,7 @@ export default function BookingPage() {
     if (!booking) return;
 
     const nextNights = extendNights;
-    if (!extendCheckoutIsLater || extendAddedNights < 1 || nextNights < 1) return;
+    if (!extendCheckoutIsLater || nextNights < 1) return;
 
     const nextStatus: TransactionStatus =
       paymentMethod === "credit"
