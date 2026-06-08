@@ -1,71 +1,44 @@
-"use client";
-
-import Link from "next/link";
-import Image from "next/image";
-import { useState } from "react";
+import Link from 'next/link';
+import { useState } from 'react';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"login" | "director">("login");
+  const [activeTab, setActiveTab] = useState<'standard' | 'platinum'>('standard');
 
-  const handleSwap = () => {
-    alert("Swap hotels clicked");
-  };
+  const tabColors = {
+    standard: 'bg-blue-500 hover:bg-blue-600',
+    platinum: 'bg-amber-500 hover:bg-amber-600',
+  } as const;
 
   return (
-    <main className="min-h-screen flex flex-col bg-gray-100 items-center">
-      <header className="w-full bg-white shadow p-4 flex justify-between items-center">
-        <Link href="/" className="flex items-center gap-2">
-          <Image src="/logo.jpeg" alt="MAWIO logo" width={40} height={40} />
-          <h1 className="text-xl font-bold">MAWIO</h1>
-        </Link>
-        <nav className="flex gap-2">
+    <main className="flex min-h-screen flex-col items-center justify-center bg-gray-100 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white shadow-lg">
+        {/* Tab selector */}
+        <div className="flex">
           <button
-            className={`px-4 py-2 rounded ${activeTab === "login" ? "bg-blue-600 text-white" : "bg-gray-200"}`}
-            onClick={() => setActiveTab("login")}
+            type="button"
+            className={`flex-1 py-3 text-center font-semibold text-white ${activeTab === 'standard' ? tabColors.standard : 'bg-gray-300'}`}
+            onClick={() => setActiveTab('standard')}
           >
-            Login
+            Standard
           </button>
           <button
-            className={`px-4 py-2 rounded ${activeTab === "director" ? "bg-green-600 text-white" : "bg-gray-200"}`}
-            onClick={() => setActiveTab("director")}
+            type="button"
+            className={`flex-1 py-3 text-center font-semibold text-white ${activeTab === 'platinum' ? tabColors.platinum : 'bg-gray-300'}`}
+            onClick={() => setActiveTab('platinum')}
           >
-            Director
+            Platinum
           </button>
-        </nav>
-      </header>
-
-      <section className="flex-1 w-full max-w-md p-6">
-        {activeTab === "login" && (
-          <div className="bg-white p-6 rounded shadow">
-            <h2 className="text-2xl mb-4">Login</h2>
-            <form>
-              <label className="block mb-2">
-                Email
-                <input type="email" className="w-full border rounded p-2 mt-1" placeholder="you@example.com" />
-              </label>
-              <label className="block mb-4">
-                Password
-                <input type="password" className="w-full border rounded p-2 mt-1" />
-              </label>
-              <button type="submit" className="w-full bg-blue-600 text-white py-2 rounded">
-                Sign In
-              </button>
-            </form>
-          </div>
-        )}
-        {activeTab === "director" && (
-          <div className="bg-white p-6 rounded shadow flex flex-col items-center">
-            <h2 className="text-2xl mb-4">Director Panel</h2>
-            <button className="bg-green-600 text-white py-2 px-4 rounded" onClick={handleSwap}>
-              Swap Hotels
-            </button>
-          </div>
-        )}
-      </section>
-
-      <footer className="w-full text-center p-4 text-sm text-gray-500">
-        © {new Date().getFullYear()} MAWIO
-      </footer>
+        </div>
+        {/* Links to login pages */}
+        <div className="p-6 text-center">
+          <Link
+            href={`/${activeTab}`}
+            className="inline-block rounded bg-indigo-600 px-4 py-2 font-semibold text-white hover:bg-indigo-700"
+          >
+            Go to {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Login
+          </Link>
+        </div>
+      </div>
     </main>
   );
 }

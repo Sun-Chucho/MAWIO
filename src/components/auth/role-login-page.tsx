@@ -72,7 +72,22 @@ const ROLE_CONFIG: Record<Role, { label: string; username: string; description: 
     destination: "/dashboard/barista",
     icon: Coffee,
   },
-};
+  standard: {
+    label: "Standard Hotel",
+    username: "standard",
+    description: "Standard hotel login page.",
+    color: "bg-blue-500",
+    destination: "/standard",
+    icon: Sun,
+  },
+  platinum: {
+    label: "Platinum Hotel",
+    username: "platinum",
+    description: "Platinum hotel login page.",
+    color: "bg-amber-500",
+    destination: "/platinum",
+    icon: Moon,
+  },
 
 export function RoleLoginPage({ role }: RoleLoginPageProps) {
   const [shift, setShift] = useState<"day" | "night">("day");

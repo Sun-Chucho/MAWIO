@@ -1,5 +1,5 @@
 
-export type Role = 'manager' | 'director' | 'inventory' | 'cashier' | 'kitchen' | 'barista';
+export type Role = 'manager' | 'director' | 'inventory' | 'cashier' | 'kitchen' | 'barista' | 'standard' | 'platinum';
 
 export interface User {
   id: string;
@@ -26,17 +26,16 @@ export interface Room {
 export const STANDARD_ROOM_PRICE = 70000;
 export const PLATINUM_ROOM_PRICE = 100000;
 
-const PLATINUM_ROOM_NUMBERS = [
-  "1001", "1002", "1003", "1004", "1005",
-  "1006", "1007", "1008", "1009", "1010",
-  "2001", "2002", "2003", "2004", "2005",
-  "2006", "2007", "2008", "2009", "2010"
+const STANDARD_ROOM_NUMBERS = [
+  "1001", "1002", "1003", "1004", "1005", "1006", "1007", "1008", "1009", "1010",
+  "1011", "1012", "1013", "1014", "1015", "1016", "1017", "1018", "1019", "1020",
+  "1021", "1022", "1023", "1024", "1025", "1026", "1027", "1028", "1029", "1030",
+  "1031", "1032", "1033"
 ] as const;
 
-const STANDARD_ROOM_NUMBERS = [
-  "3001", "3002", "3003", "3004", "3005", "3006", "3007", "3008", "3009", "3010", "3011",
-  "4001", "4002", "4003", "4004", "4005", "4006", "4007", "4008", "4009", "4010", "4011",
-  "5001", "5002", "5003", "5004", "5005", "5006", "5007", "5008", "5009", "5010", "5011"
+const PLATINUM_ROOM_NUMBERS = [
+  "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010",
+  "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020"
 ] as const;
 
 const standardRooms: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({
