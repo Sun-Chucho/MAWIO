@@ -88,6 +88,7 @@ const ROLE_CONFIG: Record<Role, { label: string; username: string; description: 
     destination: "/platinum",
     icon: Moon,
   },
+};
 
 export function RoleLoginPage({ role }: RoleLoginPageProps) {
   const [shift, setShift] = useState<"day" | "night">("day");
