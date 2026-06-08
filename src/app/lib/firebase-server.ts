@@ -1,9 +1,9 @@
 const FIREBASE_API_KEY =
-  process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyAPndMWlbNFyEMU6Rl9SS9d-gLCNzGyUYs";
+  process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyApFSD8Ig5vrrRQ6edttVp5kguP5PLbFhY";
 const FIREBASE_DATABASE_URL =
   process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL ??
-  "https://the-orange-hotel-database-default-rtdb.firebaseio.com";
-const FIREBASE_STORAGE_ROOT = "orangeHotel/storage";
+  "https://mawio-67c3b-default-rtdb.firebaseio.com/";
+const FIREBASE_STORAGE_ROOT = "mawio/storage";
 
 type FirebaseAnonSession = {
   idToken: string;

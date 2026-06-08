@@ -108,7 +108,25 @@ export function subscribeToConnectionStatus(onChange: (connected: boolean) => vo
   };
 }
 
-const FIREBASE_STORAGE_ROOT = "orangeHotel/storage";
+const FIREBASE_STORAGE_ROOT = "mawio";
+
+export function getMawioTier(): "standard" | "platinum" {
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search);
+    const queryTier = params.get("tier");
+    if (queryTier === "standard" || queryTier === "platinum") {
+      window.localStorage.setItem("mawio-tier", queryTier);
+      return queryTier;
+    }
+    const localTier = window.localStorage.getItem("mawio-tier");
+    if (localTier === "standard" || localTier === "platinum") return localTier;
+  }
+  return "standard";
+}
+
+function toStoragePath(key: string) {
+  return `${FIREBASE_STORAGE_ROOT}/${getMawioTier()}/${key.replace(/[.#$[\]/]/g, "-")}`;
+}
 
 export const FIREBASE_SYNC_KEYS = [
   "orange-hotel-cashier-state",
@@ -159,9 +177,7 @@ export const LEGACY_DEMO_KEYS = [
   "orange-hotel-kitchen-cancelled-tickets",
 ] as const;
 
-function toStoragePath(key: string) {
-  return `${FIREBASE_STORAGE_ROOT}/${key.replace(/[.#$[\]/]/g, "-")}`;
-}
+
 
 function readParsedLocalValue<T>(key: string) {
   if (typeof window === "undefined") return null;

@@ -14,8 +14,8 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: 'Orange Hotel | Secure Booking',
-  description: 'Book Standard and Platinum rooms online at Orange Hotel.',
+  title: 'MAWIO | Secure Booking',
+  description: 'Book Standard and Platinum rooms online at MAWIO.',
   icons: {
     icon: '/logo.jpeg',
     shortcut: '/logo.jpeg',
@@ -23,13 +23,13 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: 'Orange Hotel',
+    title: 'MAWIO',
     statusBarStyle: 'black-translucent',
   },
   other: {
     'mobile-web-app-capable': 'yes',
     'apple-mobile-web-app-capable': 'yes',
-    'application-name': 'Orange Hotel',
+    'application-name': 'MAWIO',
   },
 };
 

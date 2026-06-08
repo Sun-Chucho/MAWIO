@@ -21,7 +21,7 @@ export default async function PaymentReturnPage({
       <section className="w-full max-w-xl rounded-sm border border-black/10 bg-white p-6 shadow-[0_18px_45px_rgba(0,0,0,0.10)] sm:p-8">
         <CheckCircle2 className="h-12 w-12 text-orange-500" />
         <p className="mt-5 text-[11px] font-black uppercase tracking-[0.22em] text-orange-600">Payment Submitted</p>
-        <h1 className="mt-3 font-headline text-4xl leading-tight">Thank you for booking Orange Hotel</h1>
+        <h1 className="mt-3 font-headline text-4xl leading-tight">Thank you for booking MAWIO</h1>
         <p className="mt-4 text-sm leading-7 text-black/65">
           Your payment has been sent to the secure payment gateway.
           {paymentUpdated ? " Reception has been updated with the paid status." : " Reception can confirm the final transaction state from the N-Genius sandbox portal."}

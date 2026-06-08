@@ -76,7 +76,7 @@ export function SidebarNav({ role }: { role: Role }) {
   
   const handleNavigate = () => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
-      const evt = new CustomEvent("orange-hotel-sidebar-close");
+      const evt = new CustomEvent("mawio-sidebar-close");
       window.dispatchEvent(evt);
     }
   };
@@ -132,7 +132,7 @@ export function SidebarNav({ role }: { role: Role }) {
             {logo && (
               <Image 
                 src={logo.imageUrl} 
-                alt="Orange Hotel Logo" 
+                alt="MAWIO Logo" 
                 width={80} 
                 height={80} 
                 priority

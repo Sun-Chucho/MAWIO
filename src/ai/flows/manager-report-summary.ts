@@ -45,7 +45,7 @@ const managerReportSummaryPrompt = ai.definePrompt({
   name: 'managerReportSummaryPrompt',
   input: { schema: ManagerReportSummaryInputSchema },
   output: { schema: ManagerReportSummaryOutputSchema },
-  prompt: `You are an expert executive assistant for the Hotel Manager of Orange Hotel. Your task is to analyze the provided daily operational reports and generate a concise executive summary, highlighting critical insights, anomalies, and key performance indicators. The manager needs to quickly understand the hotel's performance without deep diving into raw data.
+  prompt: `You are an expert executive assistant for the Hotel Manager of MAWIO. Your task is to analyze the provided daily operational reports and generate a concise executive summary, highlighting critical insights, anomalies, and key performance indicators. The manager needs to quickly understand the hotel's performance without deep diving into raw data.
 
 Focus on the most important information that a hotel manager needs to know. Ensure the tone is professional and direct.
 

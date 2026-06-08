@@ -2,21 +2,21 @@
   "placeholderImages": [
     {
       "id": "app-logo",
-      "description": "Orange Hotel Official Logo",
+      "description": "MAWIO Official Logo",
       "imageUrl": "/logo.jpeg",
-      "imageHint": "orange hotel logo"
+      "imageHint": "MAWIO logo"
     },
     {
       "id": "hotel-lobby",
-      "description": "Orange Hotel Lobby",
+      "description": "MAWIO Lobby",
       "imageUrl": "/logo.jpeg",
-      "imageHint": "orange hotel logo"
+      "imageHint": "MAWIO logo"
     },
     {
       "id": "avatar-manager",
       "description": "Hotel Manager Avatar",
       "imageUrl": "/logo.jpeg",
-      "imageHint": "orange hotel logo"
+      "imageHint": "MAWIO logo"
     }
   ]
 }

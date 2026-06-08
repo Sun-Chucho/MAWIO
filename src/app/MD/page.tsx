@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { RoleLoginPage } from "@/components/auth/role-login-page";
 
 export const metadata: Metadata = {
-  title: "Orange Hotel MD Dashboard",
-  description: "Managing director mobile dashboard login for Orange Hotel.",
+  title: "MAWIO MD Dashboard",
+  description: "Managing director mobile dashboard login for MAWIO.",
   manifest: "/md-manifest.webmanifest",
   icons: {
     icon: [

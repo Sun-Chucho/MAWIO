@@ -55,7 +55,7 @@ function buildReceiptContent(payload: ReceiptPayload, printerName: string, openD
     lines.push("\u001bp\u0000\u0019\u00fa");
   }
 
-  lines.push("ORANGE HOTEL ARUSHA");
+  lines.push("MAWIO ARUSHA");
   lines.push(payload.department === "kitchen" ? "KITCHEN" : "BARISTA");
   lines.push(separator);
   lines.push(`Receipt: ${payload.code}`);

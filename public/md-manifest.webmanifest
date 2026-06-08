@@ -1,7 +1,7 @@
 {
-  "name": "Orange Hotel MD Dashboard",
-  "short_name": "Orange MD",
-  "description": "Orange Hotel managing director mobile dashboard.",
+  "name": "MAWIO MD Dashboard",
+  "short_name": "MAWIO MD",
+  "description": "MAWIO managing director mobile dashboard.",
   "id": "/orange-hotel-md-dashboard",
   "start_url": "/MD?source=pwa",
   "scope": "/",
@@ -30,7 +30,7 @@
     {
       "name": "Open MD Dashboard",
       "short_name": "Dashboard",
-      "description": "Open the Orange Hotel managing director dashboard.",
+      "description": "Open the MAWIO managing director dashboard.",
       "url": "/MD?source=pwa",
       "icons": [
         {

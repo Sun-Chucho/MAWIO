@@ -4,11 +4,12 @@ import Image, { type ImageProps } from "next/image";
 import Link from "next/link";
 import { FormEvent, type CSSProperties, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ChevronRight, Instagram, LoaderCircle, Mail, MapPin, MessageCircle, Phone, Send, ShieldCheck, Star } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
 const INVENTORY = {
   total: 53,
-  standard: { count: 20, price: 70000, regularPrice: 100000 },
-  platinum: { count: 33, price: 100000, regularPrice: 120000 },
+  standard: { count: 33, price: 70000, regularPrice: 100000 },
+  platinum: { count: 20, price: 100000, regularPrice: 120000 },
 } as const;
 
 type RoomType = "standard" | "platinum";
@@ -119,8 +120,8 @@ const formatTzs = (value: number) =>
   }).format(value);
 
 const WHATSAPP_NUMBER = "+255791693901";
-const WHATSAPP_LINK = `https://wa.me/255791693901?text=${encodeURIComponent("Hello Orange Hotel, I would like to ask about booking and room availability.")}`;
-const CUSTOMER_REVIEWS_STORAGE_KEY = "orange-hotel-customer-reviews";
+const WHATSAPP_LINK = `https://wa.me/255791693901?text=${encodeURIComponent("Hello MAWIO, I would like to ask about booking and room availability.")}`;
+const CUSTOMER_REVIEWS_STORAGE_KEY = "mawio-customer-reviews";
 
 const dayDiff = (checkIn: string, checkOut: string) => {
   const inDate = new Date(checkIn);
@@ -163,7 +164,7 @@ const FEATURED_EXPERIENCES = [
     image: BREAKFAST_IMAGES[0],
     eyebrow: "Breakfast Atmosphere",
     title: "Begin The Day With Elegant Breakfast Service And A Welcoming Dining Mood",
-    description: "Invite guests into a refined morning setting where fresh breakfast service, polished presentation, and calm ambience immediately position Orange Hotel as a premium stay.",
+    description: "Invite guests into a refined morning setting where fresh breakfast service, polished presentation, and calm ambience immediately position MAWIO as a premium stay.",
   },
   {
     image: BREAKFAST_IMAGES[1],
@@ -175,7 +176,7 @@ const FEATURED_EXPERIENCES = [
     image: LUNCH_IMAGES[2],
     eyebrow: "Lunch Appeal",
     title: "Serve Vibrant Lunch Plates In A Space Designed To Feel Fresh And Premium",
-    description: "Colorful dishes, generous portions, and polished plating help Orange Hotel market its restaurant as a destination for both in-house guests and walk-in diners.",
+    description: "Colorful dishes, generous portions, and polished plating help MAWIO market its restaurant as a destination for both in-house guests and walk-in diners.",
   },
   {
     image: LUNCH_IMAGES[5],
@@ -584,9 +585,9 @@ export default function Home() {
       <header className="fixed inset-x-0 top-0 z-50 border-b border-white/20 bg-black/30 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
           <Link href="/" className="flex items-center gap-3 text-white">
-            <LandingImage src="/logo.jpeg" alt="Orange Hotel logo" width={42} height={42} className="rounded-lg border border-white/40" priority />
+            <LandingImage src="/logo.jpeg" alt="MAWIO logo" width={42} height={42} className="rounded-lg border border-white/40" priority />
             <div>
-              <p className="text-[10px] uppercase tracking-[0.25em] text-white/70">Orange Hotel</p>
+              <p className="text-[10px] uppercase tracking-[0.25em] text-white/70">MAWIO</p>
               <p className="font-headline text-lg leading-none">Signature Stay</p>
             </div>
           </Link>
@@ -640,7 +641,7 @@ export default function Home() {
             <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/45 px-4 py-2 text-xs uppercase tracking-[0.16em]">
               <ShieldCheck className="h-4 w-4 text-orange-300" /> Verified Secure Reservations
             </p>
-            <h1 className="font-headline text-5xl leading-tight md:text-7xl">Orange Hotel</h1>
+            <h1 className="font-headline text-5xl leading-tight md:text-7xl">MAWIO</h1>
             <p className="mt-4 max-w-xl text-sm leading-relaxed text-white/85 md:text-base">
               Elevated stays for business and leisure travelers in Tanzania, with quiet luxury interiors and seamless digital booking.
             </p>
@@ -681,7 +682,7 @@ export default function Home() {
           <LandingImage
             key={FEATURED_EXPERIENCES[restaurantShowcaseIndex].image}
             src={FEATURED_EXPERIENCES[restaurantShowcaseIndex].image}
-            alt={`Orange Hotel featured experience ${restaurantShowcaseIndex + 1}`}
+            alt={`MAWIO featured experience ${restaurantShowcaseIndex + 1}`}
             fill
             sizes="100vw"
             className="object-cover transition-all ease-in-out"
@@ -827,7 +828,7 @@ export default function Home() {
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-orange-200">Orange Hotel Promise</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-orange-200">MAWIO Promise</p>
                     <p className="mt-2 text-sm leading-6 text-white/78">
                       Designed to attract attention online and give guests a clear sense of the experience waiting inside the hotel.
                     </p>
@@ -858,7 +859,7 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-orange-300">Reservation Popup</p>
-                <h3 className="mt-3 font-headline text-3xl leading-tight sm:text-4xl">Book Your Stay At Orange Hotel</h3>
+                <h3 className="mt-3 font-headline text-3xl leading-tight sm:text-4xl">Book Your Stay At MAWIO</h3>
               </div>
               <button
                 type="button"
@@ -942,21 +943,21 @@ export default function Home() {
       <section className="mx-auto max-w-6xl px-4 pb-12 sm:px-6 sm:pb-14">
         <div className="grid overflow-hidden rounded-sm bg-[#3a3a3a] text-white md:grid-cols-3">
           <div className="relative min-h-[260px] px-8 py-12 text-center">
-            <LandingImage src={MAIN_ROOM_IMAGE} alt="Orange Hotel luxury room" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
+            <LandingImage src={MAIN_ROOM_IMAGE} alt="MAWIO luxury room" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
             <div className="absolute inset-0 bg-black/50" />
             <div className="relative flex h-full items-center justify-center">
             <h3 className="font-headline text-3xl">Comfortable Stays</h3>
             </div>
           </div>
           <div className="relative min-h-[260px] border-y border-white/20 px-8 py-12 text-center md:border-x md:border-y-0">
-            <LandingImage src={LUNCH_IMAGES[2]} alt="Orange Hotel dining" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
+            <LandingImage src={LUNCH_IMAGES[2]} alt="MAWIO dining" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
             <div className="absolute inset-0 bg-black/50" />
             <div className="relative flex h-full items-center justify-center">
             <h3 className="font-headline text-3xl">Great Dining</h3>
             </div>
           </div>
           <div className="relative min-h-[260px] px-8 py-12 text-center">
-            <LandingImage src={BAR_IMAGES[1]} alt="Orange Hotel bar" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
+            <LandingImage src={BAR_IMAGES[1]} alt="MAWIO bar" fill sizes="(max-width: 768px) 100vw, 33vw" className="object-cover" />
             <div className="absolute inset-0 bg-black/50" />
             <div className="relative flex h-full items-center justify-center">
             <h3 className="font-headline text-3xl">Evening Bar Vibes</h3>
@@ -1076,7 +1077,7 @@ export default function Home() {
 
         <form onSubmit={handleSubmit} className="rounded-sm border border-black/10 bg-white p-5 shadow-[0_16px_32px_rgba(0,0,0,0.08)] sm:p-7 md:p-8">
           <h2 className="font-headline text-3xl sm:text-4xl">Reserve Your Room</h2>
-          <p className="mt-2 text-sm text-black/60">Secure reservation form with instant submission to Orange Hotel booking backend.</p>
+          <p className="mt-2 text-sm text-black/60">Secure reservation form with instant submission to MAWIO booking backend.</p>
 
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="text-sm font-semibold">
@@ -1175,7 +1176,7 @@ export default function Home() {
           <div className="flex flex-col gap-5 px-5 py-7 sm:px-8 md:flex-row md:items-end md:justify-between">
             <div className="max-w-2xl">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-orange-300">Customer Reviews</p>
-              <h2 className="mt-3 font-headline text-4xl leading-tight">Guest Feedback From Orange Hotel</h2>
+              <h2 className="mt-3 font-headline text-4xl leading-tight">Guest Feedback From MAWIO</h2>
               <div className="mt-5 flex flex-wrap items-center gap-3">
                 <div className="flex text-orange-300">
                   {Array.from({ length: 5 }).map((_, index) => (
@@ -1232,7 +1233,7 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-orange-600">Submit Review</p>
-                <h2 className="mt-2 font-headline text-3xl leading-tight">Rate Your Orange Hotel Experience</h2>
+                <h2 className="mt-2 font-headline text-3xl leading-tight">Rate Your MAWIO Experience</h2>
               </div>
               <button
                 type="button"
@@ -1304,10 +1305,44 @@ export default function Home() {
         </div>
       ) : null}
 
+      <section className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+        <div className="rounded-2xl bg-white p-8 shadow-[0_18px_35px_rgba(0,0,0,0.05)]">
+          <h2 className="font-headline text-3xl mb-6 text-center">Staff Portals</h2>
+          <Tabs defaultValue="standard" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 max-w-md mx-auto mb-8">
+              <TabsTrigger value="standard" className="data-[state=active]:bg-blue-600 data-[state=active]:text-white">MAWIO Standard</TabsTrigger>
+              <TabsTrigger value="platinum" className="data-[state=active]:bg-[#9c613a] data-[state=active]:text-white">MAWIO Platinum</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="standard">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-center">
+                <Link href="/MANAGER?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Manager</Link>
+                <Link href="/MD?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Director</Link>
+                <Link href="/RB?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Reception</Link>
+                <Link href="/IM?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Inventory</Link>
+                <Link href="/KP?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Kitchen</Link>
+                <Link href="/BP?tier=standard" className="p-4 border rounded-xl hover:border-blue-600 hover:bg-blue-50 transition">Barista</Link>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="platinum">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-center">
+                <Link href="/MANAGER?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Manager</Link>
+                <Link href="/MD?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Director</Link>
+                <Link href="/RB?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Reception</Link>
+                <Link href="/IM?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Inventory</Link>
+                <Link href="/KP?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Kitchen</Link>
+                <Link href="/BP?tier=platinum" className="p-4 border rounded-xl hover:border-[#9c613a] hover:bg-[#9c613a]/10 transition">Barista</Link>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </section>
+
       <footer className="border-t border-white/10 bg-[#0b0b0b] text-white">
         <div className="mx-auto grid max-w-6xl gap-8 px-6 py-14 md:grid-cols-[1.1fr_1fr_1.1fr]">
           <div className="max-w-md">
-            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-orange-300">Orange Hotel</p>
+            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-orange-300">MAWIO</p>
             <h3 className="mt-3 font-headline text-4xl leading-tight">Luxury Stay With Precision Hospitality</h3>
             <p className="mt-4 text-sm leading-7 text-white/72">
               A modern luxury stay shaped around comfort, precision service, and secure online booking.
@@ -1362,11 +1397,11 @@ export default function Home() {
                 className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:border-orange-400/50 hover:bg-white/10 hover:text-white"
               >
                 <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-orange-300" />
-                <span>Orange Hotel, Colonel Middleton Rd, Arusha</span>
+                <span>MAWIO, Colonel Middleton Rd, Arusha</span>
               </a>
               <div className="overflow-hidden rounded-[22px] border border-white/10 bg-white/5 p-2">
                 <iframe
-                  title="Orange Hotel map"
+                  title="MAWIO map"
                   src="https://www.google.com/maps?q=Orange+Hotel,+Colonel+Middleton+Rd,+Arusha&output=embed"
                   loading="lazy"
                   referrerPolicy="no-referrer-when-downgrade"
@@ -1406,7 +1441,7 @@ export default function Home() {
             <div className="flex items-center justify-between bg-black px-5 py-4 text-white">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-300">Live Chat</p>
-                <p className="mt-1 font-headline text-xl leading-none sm:text-2xl">Orange Hotel Support</p>
+                <p className="mt-1 font-headline text-xl leading-none sm:text-2xl">MAWIO Support</p>
               </div>
               <button
                 type="button"
