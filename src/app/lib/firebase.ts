@@ -4,20 +4,20 @@ import { browserLocalPersistence, getAuth, onAuthStateChanged, setPersistence, s
 import { getDatabase, onValue, ref } from "firebase/database";
 
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyAPndMWlbNFyEMU6Rl9SS9d-gLCNzGyUYs",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "the-orange-hotel-database.firebaseapp.com",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyApFSD8Ig5vrrRQ6edttVp5kguP5PLbFhY",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "mawio-67c3b.firebaseapp.com",
   databaseURL:
     process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL ??
-    "https://the-orange-hotel-database-default-rtdb.firebaseio.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "the-orange-hotel-database",
+    "https://mawio-67c3b-default-rtdb.firebaseio.com",
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "mawio-67c3b",
   storageBucket:
-    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "the-orange-hotel-database.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "380844013172",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "1:380844013172:web:889eccb82e19c88e8b8321",
+    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "mawio-67c3b.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "",
 };
 
 const measurementId =
-  process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID ?? "G-59LNQFWG4V";
+  process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID ?? "";
 
 export const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const firebaseAuth = getAuth(firebaseApp);
@@ -95,7 +95,7 @@ export function ensureFirebaseAuthReady() {
 if (typeof window !== "undefined") {
   void ensureFirebaseAuthReady()
     .then(() => {
-      onValue(ref(firebaseDatabase, "orangeHotel/storage"), () => {}, { onlyOnce: false });
+      onValue(ref(firebaseDatabase, "mawio"), () => {}, { onlyOnce: false });
     })
     .catch((error) => {
       console.error("Firebase authentication bootstrap failed", error);

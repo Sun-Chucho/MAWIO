@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { PLATINUM_ROOM_PRICE, ROOMS, Role, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
 import { readStoredRole } from "@/app/lib/auth";
 import { readCashierState, STORAGE_CASHIER_STATE, writeCashierState } from "@/app/lib/storage";
-import { HISTORICAL_BOOKINGS } from "@/app/lib/seed-bookings";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +20,6 @@ import {
 import { Clock, Phone, Receipt, User } from "lucide-react";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { toast } from "@/hooks/use-toast";
 import { isBookingStillActive, readRoomsState, syncRoomsStateFromBookings, updateRoomStatusByNumber } from "@/app/lib/rooms-storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 
@@ -279,24 +277,6 @@ export default function BookingPage() {
       setReceiptSeq(snapshot.receiptSeq);
       setRooms(syncRoomsStateFromBookings(normalizedTransactions, incomingRooms));
 
-      // Historical Recovery Logic
-      const existingIds = new Set(snapshot.transactions.map((t) => t.id));
-      const missingBookings = snapshot.transactions.length > 0
-        ? HISTORICAL_BOOKINGS.filter((hb) => !existingIds.has(hb.id))
-        : [];
-
-      if (missingBookings.length > 0) {
-        const recoveredTransactions = [...snapshot.transactions, ...missingBookings].sort(
-          (a, b) => b.createdAt - a.createdAt
-        );
-        setTransactions(recoveredTransactions);
-        writeCashierState(recoveredTransactions, snapshot.receiptSeq);
-        setRooms(syncRoomsStateFromBookings(recoveredTransactions, incomingRooms));
-        toast({
-          title: "Bookings Recovered",
-          description: `Successfully restored ${missingBookings.length} historical records.`,
-        });
-      }
     };
 
     void Promise.all([

@@ -54,6 +54,8 @@ const DEFAULT_ROLE_USERNAMES: Record<Role, string> = {
   cashier: "reception",
   kitchen: "kitchen",
   barista: "barista",
+  standard: "standard",
+  platinum: "platinum",
 };
 const STAFF_STORAGE_KEY = "orange-hotel-staff-members";
 const DEFAULT_BARISTA_STAFF: StaffMember[] = [

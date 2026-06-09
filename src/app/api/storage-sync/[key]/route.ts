@@ -14,6 +14,12 @@ function decodeStorageKey(rawKey: string) {
   return decodeURIComponent(rawKey);
 }
 
+function getRequestTier(request: NextRequest) {
+  const queryTier = request.nextUrl.searchParams.get("tier");
+  const headerTier = request.headers.get("x-mawio-tier");
+  return queryTier === "platinum" || headerTier === "platinum" ? "platinum" : "standard";
+}
+
 function getArrayCount(value: unknown) {
   return Array.isArray(value) ? value.length : 0;
 }
@@ -144,10 +150,10 @@ function protectIncomingSyncedValue(key: string, incomingValue: unknown, current
   return incomingValue;
 }
 
-export async function GET(_: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const { key } = await context.params;
-    const value = await readServerSyncedStorageValue(decodeStorageKey(key));
+    const value = await readServerSyncedStorageValue(decodeStorageKey(key), { tier: getRequestTier(request) });
     return NextResponse.json({ value });
   } catch (error) {
     return NextResponse.json(
@@ -162,9 +168,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     const { key } = await context.params;
     const decodedKey = decodeStorageKey(key);
     const body = (await request.json()) as { value?: unknown };
-    const currentValue = await readServerSyncedStorageValue(decodedKey).catch(() => null);
+    const tier = getRequestTier(request);
+    const currentValue = await readServerSyncedStorageValue(decodedKey, { tier }).catch(() => null);
     const nextValue = protectIncomingSyncedValue(decodedKey, body.value ?? null, currentValue);
-    await writeServerSyncedStorageValue(decodedKey, nextValue);
+    await writeServerSyncedStorageValue(decodedKey, nextValue, { tier });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(
@@ -174,10 +181,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   }
 }
 
-export async function DELETE(_: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const { key } = await context.params;
-    await writeServerSyncedStorageValue(decodeStorageKey(key), null);
+    await writeServerSyncedStorageValue(decodeStorageKey(key), null, { tier: getRequestTier(request) });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

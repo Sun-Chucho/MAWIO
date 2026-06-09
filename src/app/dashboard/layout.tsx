@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { SidebarNav } from "@/components/layout/sidebar-nav";
-import { STORAGE_COMPANY_STOCK } from "@/app/lib/company-stock";
-import { COMPANY_STOCK_SHEET } from "@/app/lib/company-stock-seed";
 import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
 import { InventoryItem, Role } from "@/app/lib/mock-data";
@@ -75,6 +73,8 @@ const STARTUP_SYNC_KEYS_BY_ROLE: Record<Role, string[]> = {
   cashier: ["orange-hotel-settings", "orange-hotel-login-profiles", "orange-hotel-cashier-state", "orange-hotel-rooms-state"],
   kitchen: ["orange-hotel-settings", "orange-hotel-login-profiles", "orange-hotel-kitchen-state", "orange-hotel-main-store-items", "orange-hotel-inventory-items", "orange-hotel-store-movements", "orange-hotel-store-usage"],
   barista: ["orange-hotel-settings", "orange-hotel-login-profiles", "orange-hotel-barista-state", "orange-hotel-main-store-items", "orange-hotel-inventory-items", "orange-hotel-store-movements", "orange-hotel-store-usage"],
+  standard: ["orange-hotel-settings", "orange-hotel-login-profiles"],
+  platinum: ["orange-hotel-settings", "orange-hotel-login-profiles"],
 };
 
 async function hydrateStartupStateForRole(role: Role) {
@@ -566,9 +566,6 @@ function applyBusinessCorrections() {
 
   if (!localStorage.getItem(DOMPO_STOCK_FIX_KEY)) {
     const inventoryItems = readJson<InventoryItem[]>("orange-hotel-inventory-items") ?? [];
-    const dompoSeed = BARISTA_INVENTORY_SEED.find(
-      (item) => item.name === "Classic Dompo" && item.size === "750ml",
-    );
 
     if (inventoryItems.length > 0) {
       const dompoIndex = inventoryItems.findIndex(
@@ -583,22 +580,6 @@ function applyBusinessCorrections() {
           minStock: Math.max(nextInventoryItems[dompoIndex].minStock ?? 0, 1),
           unit: nextInventoryItems[dompoIndex].unit || "Bottle",
         };
-      } else if (dompoSeed) {
-        nextInventoryItems.push({
-          id: `inv-${dompoSeed.barcode || "dompo-750ml"}`,
-          barcode: dompoSeed.barcode || "",
-          name: dompoSeed.name || "Classic Dompo",
-          category: dompoSeed.category || "Wine",
-          size: dompoSeed.size || "750ml",
-          stock: 3,
-          buyingPrice: dompoSeed.buyingPrice || 0,
-          sellingPrice: dompoSeed.sellingPrice || 20000,
-          status: "ACTIVE",
-          minStock: 1,
-          unit: dompoSeed.unit || "Bottle",
-          totSold: dompoSeed.totSold || 0,
-          price: dompoSeed.sellingPrice || 20000,
-        });
       }
 
       writeJson("orange-hotel-inventory-items", nextInventoryItems);
@@ -642,22 +623,6 @@ function applyBusinessCorrections() {
           return;
         }
 
-        nextInventoryItems.push({
-          id: `inv-${seedItem.barcode || `${seedItem.name}-${seedItem.size}`}`,
-          barcode: seedItem.barcode || "",
-          name: seedItem.name || "",
-          category: "Bar",
-          subCategory: seedItem.category || "Bar",
-          size: seedItem.size || "",
-          stock: targetStock,
-          totSold: seedItem.totSold || 0,
-          buyingPrice: seedItem.buyingPrice || 0,
-          sellingPrice: seedItem.sellingPrice || 0,
-          price: seedItem.sellingPrice || 0,
-          status: "ACTIVE",
-          minStock: seedItem.minStock || 0,
-          unit: seedItem.unit || "Bottle",
-        });
       });
 
       writeJson("orange-hotel-inventory-items", nextInventoryItems);
@@ -699,10 +664,7 @@ function applyBusinessCorrections() {
             ...nextBaristaStoreItems[existingIndex],
             ...nextStoreRecord,
           };
-          return;
         }
-
-        nextBaristaStoreItems.push(nextStoreRecord);
       });
 
       writeJson(STORAGE_MAIN_STORE_ITEMS, [...otherStoreItems, ...nextBaristaStoreItems]);
@@ -814,25 +776,6 @@ function applyBusinessCorrections() {
           status: item.status ?? current.status,
         };
         inventoryChanged = true;
-      } else {
-        nextInventoryItems.push({
-          id: `inv-${item.barcode || `${item.name}-${item.size}`}`,
-          barcode: item.barcode || "",
-          name: item.name,
-          category: item.category,
-          subCategory: item.category,
-          size: item.size,
-          stock: item.stock,
-          buyingPrice: item.buyingPrice,
-          sellingPrice: item.sellingPrice,
-          price: item.sellingPrice,
-          totPerBottle: item.totPerBottle,
-          totSold: item.totSold ?? 0,
-          minStock: item.minStock,
-          unit: item.unit,
-          status: item.status ?? "ACTIVE",
-        });
-        inventoryChanged = true;
       }
 
       const storeIndex = nextStoreItems.findIndex(
@@ -857,22 +800,6 @@ function applyBusinessCorrections() {
           totLimit: item.totPerBottle,
           totSold: item.totSold ?? nextStoreItems[storeIndex].totSold ?? 0,
         };
-        storeChanged = true;
-      } else {
-        nextStoreItems.push({
-          id: `s-${item.barcode || `${item.name}-${item.size}`}`,
-          name: item.name,
-          subCategory: item.category,
-          size: item.size,
-          stock: item.stock,
-          unit: item.unit,
-          minStock: item.minStock,
-          lane: "barista",
-          buyingPrice: item.buyingPrice,
-          sellingPrice: item.sellingPrice,
-          totLimit: item.totPerBottle,
-          totSold: item.totSold ?? 0,
-        });
         storeChanged = true;
       }
     }
@@ -1130,13 +1057,7 @@ function applyBusinessCorrections() {
     localStorage.setItem(STAFF_FOOD_DISHES_EXPENSE_REMOVAL_KEY, "1");
   }
 
-  if (!localStorage.getItem(COMPANY_STOCK_SHEET_FIX_KEY)) {
-    const existingCompanyStock = readJson<unknown[]>(STORAGE_COMPANY_STOCK);
-    if (!Array.isArray(existingCompanyStock) || existingCompanyStock.length === 0) {
-      writeJson(STORAGE_COMPANY_STOCK, COMPANY_STOCK_SHEET);
-    }
-    localStorage.setItem(COMPANY_STOCK_SHEET_FIX_KEY, "1");
-  }
+  localStorage.setItem(COMPANY_STOCK_SHEET_FIX_KEY, "1");
 }
 
 export default function DashboardLayout({
@@ -1163,6 +1084,8 @@ export default function DashboardLayout({
     cashier: ['/dashboard/cashier', '/dashboard/laundry', '/dashboard/cash-requests', '/dashboard/website-bookings', '/dashboard/live-chat', '/dashboard/payments', '/dashboard/rooms', '/dashboard/settings/password'],
     kitchen: ['/dashboard/fnb-pos', '/dashboard/kitchen', '/dashboard/cancelled', '/dashboard/payments', '/dashboard/settings/password'],
     barista: ['/dashboard/fnb-pos', '/dashboard/barista', '/dashboard/payments', '/dashboard/cancelled', '/dashboard/settings/password'],
+    standard: [],
+    platinum: [],
   };
 
   const defaultByRole: Record<Role, string> = {
@@ -1172,6 +1095,8 @@ export default function DashboardLayout({
     cashier: '/dashboard/cashier',
     kitchen: '/dashboard/kitchen',
     barista: '/dashboard/barista',
+    standard: '/standard',
+    platinum: '/platinum',
   };
 
   useEffect(() => {

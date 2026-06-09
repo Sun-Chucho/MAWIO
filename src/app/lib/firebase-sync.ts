@@ -47,7 +47,7 @@ function markSyncHealthy(key?: string) {
 }
 
 async function fetchServerSyncedStorageValue<T>(key: string): Promise<T | null> {
-  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}`, {
+  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=${encodeURIComponent(getMawioTier())}`, {
     method: "GET",
     cache: "no-store",
   });
@@ -61,7 +61,7 @@ async function fetchServerSyncedStorageValue<T>(key: string): Promise<T | null> 
 }
 
 async function writeServerSyncedStorageValue<T>(key: string, value: T) {
-  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}`, {
+  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=${encodeURIComponent(getMawioTier())}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
@@ -73,7 +73,7 @@ async function writeServerSyncedStorageValue<T>(key: string, value: T) {
 }
 
 async function removeServerSyncedStorageValue(key: string) {
-  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}`, {
+  const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=${encodeURIComponent(getMawioTier())}`, {
     method: "DELETE",
   });
 

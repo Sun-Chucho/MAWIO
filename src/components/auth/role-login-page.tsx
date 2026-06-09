@@ -99,7 +99,8 @@ export function RoleLoginPage({ role }: RoleLoginPageProps) {
   const selectableUsers = useMemo(() => {
     return profileUsers.filter((user) => !user.blocked);
   }, [profileUsers]);
-  const [username, setUsername] = useState(config.username);
+  const storedUsername = typeof window !== "undefined" ? localStorage.getItem(`orange-hotel-username-${role}`) : null;
+const [username, setUsername] = useState(storedUsername ?? config.username);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -319,6 +320,7 @@ export function RoleLoginPage({ role }: RoleLoginPageProps) {
 
     setError("");
     localStorage.setItem("orange-hotel-username", loginUsername);
+localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
     localStorage.setItem("orange-hotel-role", role);
     if (role === "manager") {
       localStorage.setItem(STORAGE_MANAGER_SESSION_VERSION, MANAGER_SESSION_VERSION);
@@ -351,7 +353,7 @@ export function RoleLoginPage({ role }: RoleLoginPageProps) {
   };
 
   return (
-    <div className={cn("flex min-h-[100dvh] w-full flex-col overflow-x-hidden", isDirector ? "bg-[#f4f7f2]" : "bg-background")}>
+    <div className={cn("flex min-h-[100dvh] w-full flex-col overflow-x-hidden", isDirector ? "bg-[#f4f7f2]" : role === "standard" ? "bg-blue-100" : role === "platinum" ? "bg-amber-100" : "bg-background")}>
       <div className={cn("flex flex-1 flex-col items-center justify-center p-6 text-center", isDirector && "justify-start px-3 py-4 sm:px-4 sm:py-8 sm:justify-center")}>
         <div className={cn("mb-8", isDirector && "mb-4 sm:mb-6")}>
           <p className="text-muted-foreground text-[10px] uppercase tracking-[0.3em] font-black opacity-60">

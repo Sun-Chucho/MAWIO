@@ -31,7 +31,6 @@ import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-ma
 import { CheckCircle2, Coffee, Lock, Minus, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
-import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -352,18 +351,7 @@ export default function BaristaPage() {
       
       const inventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
       setInventoryItems(inventory);
-      if (inventory.length === 0) {
-        const seed = BARISTA_INVENTORY_SEED.map((item) => ({
-          ...item,
-          id: item.id || `inv-${item.barcode}`,
-          totSold: item.totSold ?? 0,
-        })) as InventoryItem[];
-        writeJson(STORAGE_INVENTORY_ITEMS, seed);
-        setInventoryItems(seed);
-        setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, seed, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
-      } else {
-        setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
-      }
+      setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
       setPosHydrated(true);
     };
 
