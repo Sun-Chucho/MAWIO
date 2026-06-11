@@ -17,9 +17,9 @@ export const metadata: Metadata = {
   title: 'MAWIO | Secure Booking',
   description: 'Book Standard and Platinum rooms online at MAWIO.',
   icons: {
-    icon: '/logo.jpeg',
-    shortcut: '/logo.jpeg',
-    apple: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: [{ url: '/logo.png', sizes: 'any', type: 'image/png' }],
   },
   appleWebApp: {
     capable: true,

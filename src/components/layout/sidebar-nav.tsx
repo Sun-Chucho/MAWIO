@@ -28,7 +28,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Role } from "@/app/lib/mock-data";
-import { PlaceHolderImages } from "@/lib/placeholder-images";
 
 interface NavItem {
   label: string;
@@ -120,26 +119,19 @@ export function SidebarNav({ role }: { role: Role }) {
     });
   }, [role]);
 
-  const logo = useMemo(() => 
-    PlaceHolderImages.find(img => img.id === 'app-logo'), 
-  []);
-
   return (
     <div className="flex h-full min-h-0 w-64 flex-col bg-black text-white border-r border-sidebar-border">
       <div className="p-8 flex justify-center">
         <Link href="/dashboard" className="group">
           <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center p-2 group-hover:scale-105 transition-transform overflow-hidden shadow-2xl relative">
-            {logo && (
-              <Image 
-                src={logo.imageUrl} 
-                alt="MAWIO Logo" 
-                width={80} 
-                height={80} 
-                priority
-                className="object-contain"
-                data-ai-hint={logo.imageHint}
-              />
-            )}
+            <Image
+              src="/logo.png"
+              alt="MAWIO Logo"
+              width={80}
+              height={80}
+              priority
+              className="object-contain"
+            />
           </div>
         </Link>
       </div>
@@ -187,8 +179,8 @@ export function SidebarNav({ role }: { role: Role }) {
       <div className="shrink-0 p-4 border-t border-sidebar-border mt-auto">
         <div className="flex items-center gap-3 p-3 rounded-xl bg-sidebar-accent mb-4 border border-white/5">
           <div className="w-9 h-9 rounded-lg bg-muted overflow-hidden relative border border-white/20">
-            <Image 
-              src="/logo.jpeg" 
+            <Image
+              src="/logo.png"
               alt="User Avatar" 
               fill 
               className="object-cover"
