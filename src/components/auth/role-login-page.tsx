@@ -2,16 +2,34 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Building2, Coffee, Download, Lock, Package, ShieldCheck, ShoppingCart, Smartphone, Sun, Moon, User, Utensils } from "lucide-react";
 import { Role } from "@/app/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { MANAGER_SESSION_VERSION, STORAGE_MANAGER_SESSION_VERSION, getDefaultLoginPassword, getProfilePassword, hydrateLoginProfilesFromServer, isProfileUserBlocked, LoginProfiles, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, upsertProfileUser, writeLocalLoginProfiles } from "@/app/lib/login-profiles";
+import {
+  getActiveSessionRoleStorageKey,
+  getActiveSessionUsernameStorageKey,
+  getDefaultLoginPassword,
+  getLoginProfilesStorageKey,
+  getManagerSessionVersionStorageKey,
+  getProfilePassword,
+  hydrateLoginProfilesFromServer,
+  isProfileUserBlocked,
+  LoginProfiles,
+  LoginProfileScope,
+  MANAGER_SESSION_VERSION,
+  readLocalLoginProfiles,
+  saveLoginProfileToServer,
+  upsertProfileUser,
+  writeLocalLoginProfiles,
+} from "@/app/lib/login-profiles";
 
 interface RoleLoginPageProps {
   role: Role;
+  initialHotelRole?: HotelLoginRole;
 }
 
 interface BeforeInstallPromptEvent extends Event {
@@ -23,7 +41,19 @@ type NavigatorWithStandalone = Navigator & {
   standalone?: boolean;
 };
 
-const ROLE_CONFIG: Record<Role, { label: string; username: string; description: string; color: string; destination: string; icon: typeof ShieldCheck }> = {
+type LoginRole = Exclude<Role, "standard" | "platinum">;
+type HotelLoginRole = Exclude<LoginRole, "director">;
+
+type LoginConfig = {
+  label: string;
+  username: string;
+  description: string;
+  color: string;
+  destination: string;
+  icon: typeof ShieldCheck;
+};
+
+const ROLE_CONFIG: Record<Role, LoginConfig> = {
   manager: {
     label: "Hotel Manager",
     username: "manager",
@@ -90,17 +120,49 @@ const ROLE_CONFIG: Record<Role, { label: string; username: string; description: 
   },
 };
 
-export function RoleLoginPage({ role }: RoleLoginPageProps) {
+const HOTEL_ROLE_CONFIG: Record<HotelLoginRole, LoginConfig> = {
+  manager: ROLE_CONFIG.manager,
+  inventory: ROLE_CONFIG.inventory,
+  cashier: {
+    ...ROLE_CONFIG.cashier,
+    label: "Receptionist",
+    username: "receptionist",
+    description: "Reception desk, bookings, guest check-in, and payments.",
+  },
+  kitchen: ROLE_CONFIG.kitchen,
+  barista: ROLE_CONFIG.barista,
+};
+
+const HOTEL_LOGIN_ROLES: HotelLoginRole[] = ["manager", "cashier", "inventory", "kitchen", "barista"];
+
+const HOTEL_ROLE_PATHS: Record<HotelLoginRole, string> = {
+  manager: "manager",
+  cashier: "receptionist",
+  inventory: "inventory",
+  kitchen: "kitchen",
+  barista: "barista",
+};
+
+export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginPageProps) {
   const [shift, setShift] = useState<"day" | "night">("day");
-  const config = ROLE_CONFIG[role];
+  const isHotelTierPage = role === "standard" || role === "platinum";
+  const loginScope: LoginProfileScope = isHotelTierPage ? role : "core";
+  const [selectedRole, setSelectedRole] = useState<HotelLoginRole>(initialHotelRole);
+  const activeRole: LoginRole = isHotelTierPage ? selectedRole : (role as LoginRole);
+  const pageConfig = ROLE_CONFIG[role];
+  const roleConfig = isHotelTierPage ? HOTEL_ROLE_CONFIG[selectedRole] : ROLE_CONFIG[activeRole];
   const isDirector = role === "director";
   const isInstallableRole = role === "director" || role === "kitchen" || role === "barista";
   const [profileUsers, setProfileUsers] = useState<Array<{ id: string; name: string; blocked?: boolean }>>([]);
   const selectableUsers = useMemo(() => {
     return profileUsers.filter((user) => !user.blocked);
   }, [profileUsers]);
-  const storedUsername = typeof window !== "undefined" ? localStorage.getItem(`orange-hotel-username-${role}`) : null;
-const [username, setUsername] = useState(storedUsername ?? config.username);
+  const sessionUsernameKey = getActiveSessionUsernameStorageKey(loginScope);
+  const sessionRoleKey = getActiveSessionRoleStorageKey(loginScope);
+  const managerSessionKey = getManagerSessionVersionStorageKey(loginScope);
+  const shiftStorageKey = loginScope === "core" ? "orange-hotel-shift" : `orange-hotel-shift-${loginScope}`;
+  const storedUsername = typeof window !== "undefined" ? localStorage.getItem(sessionUsernameKey) : null;
+  const [username, setUsername] = useState(storedUsername ?? roleConfig.username);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -109,14 +171,14 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
   const [isIosDevice, setIsIosDevice] = useState(false);
   const [isAndroidDevice, setIsAndroidDevice] = useState(false);
   const [serviceWorkerReady, setServiceWorkerReady] = useState(false);
-  const roleDefaultPassword = getDefaultLoginPassword(role);
+  const roleDefaultPassword = getDefaultLoginPassword(activeRole);
 
   useEffect(() => {
     const applyProfiles = () => {
-      const profiles = readLocalLoginProfiles();
-      const profile = profiles?.[role];
+      const profiles = readLocalLoginProfiles(loginScope);
+      const profile = profiles?.[activeRole];
       const nextProfileUsers = (profile?.users ?? []).map((user) => ({
-          id: `${role}-${user.username}`,
+          id: `${loginScope}-${activeRole}-${user.username}`,
           name: user.username,
           blocked: user.blocked,
         }));
@@ -130,24 +192,24 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
         return;
       }
       const listedUser = nextSelectableUsers.find((user) => user.name.trim().toLowerCase() === profile.username?.trim().toLowerCase());
-      setUsername(listedUser?.name || nextSelectableUsers[0]?.name || profile.username || config.username);
-      if (role === "cashier" && (profile.shift === "day" || profile.shift === "night")) {
+      setUsername(listedUser?.name || nextSelectableUsers[0]?.name || profile.username || roleConfig.username);
+      if (activeRole === "cashier" && (profile.shift === "day" || profile.shift === "night")) {
         setShift(profile.shift);
       }
     };
 
     applyProfiles();
-    void hydrateLoginProfilesFromServer().then(applyProfiles);
+    void hydrateLoginProfilesFromServer(loginScope).then(applyProfiles);
 
     const handleProfilesUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ key?: string }>).detail;
-      if (detail?.key !== STORAGE_LOGIN_PROFILES) return;
+      if (detail?.key !== getLoginProfilesStorageKey(loginScope)) return;
       applyProfiles();
     };
 
     window.addEventListener("orange-hotel-storage-updated", handleProfilesUpdated as EventListener);
     return () => window.removeEventListener("orange-hotel-storage-updated", handleProfilesUpdated as EventListener);
-  }, [config.username, role]);
+  }, [activeRole, loginScope, roleConfig.username]);
 
   useEffect(() => {
     if (!isInstallableRole || typeof window === "undefined" || !("serviceWorker" in navigator)) return;
@@ -180,7 +242,7 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
 
     const handleAppInstalled = () => {
       setInstallPrompt(null);
-      setInstallFeedback(`Installed. Look for ${config.label} on your desktop, home screen, or app list.`);
+      setInstallFeedback(`Installed. Look for ${roleConfig.label} on your desktop, home screen, or app list.`);
     };
 
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
@@ -190,7 +252,7 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
       window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
       window.removeEventListener("appinstalled", handleAppInstalled);
     };
-  }, [config.label, isInstallableRole]);
+  }, [isInstallableRole, roleConfig.label]);
 
   const installDirectorApp = async () => {
     if (installPrompt) {
@@ -199,7 +261,7 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
       setInstallPrompt(null);
       setInstallFeedback(
         choice.outcome === "accepted"
-          ? `Installing. Look for ${config.label} on your desktop, home screen, or app list.`
+          ? `Installing. Look for ${roleConfig.label} on your desktop, home screen, or app list.`
           : "Installation dismissed.",
       );
       return;
@@ -211,11 +273,11 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
     }
 
     if (isAndroidDevice) {
-      setInstallFeedback(`On Android, open your browser menu, choose Install app or Add to Home screen, then look for ${config.label}.`);
+      setInstallFeedback(`On Android, open your browser menu, choose Install app or Add to Home screen, then look for ${roleConfig.label}.`);
       return;
     }
 
-    setInstallFeedback(`Use your browser menu to install this page as an app for ${config.label}.`);
+    setInstallFeedback(`Use your browser menu to install this page as an app for ${roleConfig.label}.`);
   };
 
   const installButtonText = installPrompt
@@ -230,12 +292,19 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
     : serviceWorkerReady
       ? "App installer ready"
       : "Preparing app installer";
+  const loginDestination = roleConfig.destination;
   const fallbackLoginScript = `
 (() => {
-  const role = ${JSON.stringify(role)};
-  const destination = ${JSON.stringify(config.destination)};
+  const formRole = ${JSON.stringify(role)};
+  const loginRole = ${JSON.stringify(activeRole)};
+  const destination = ${JSON.stringify(loginDestination)};
   const defaultPassword = ${JSON.stringify(roleDefaultPassword)};
-  const defaultUsername = ${JSON.stringify(config.username)};
+  const defaultUsername = ${JSON.stringify(roleConfig.username)};
+  const profilesStorageKey = ${JSON.stringify(getLoginProfilesStorageKey(loginScope))};
+  const sessionUsernameKey = ${JSON.stringify(sessionUsernameKey)};
+  const sessionRoleKey = ${JSON.stringify(sessionRoleKey)};
+  const managerSessionKey = ${JSON.stringify(managerSessionKey)};
+  const shiftStorageKey = ${JSON.stringify(shiftStorageKey)};
   const allowedUsernames = ${JSON.stringify(selectableUsers.map((user) => user.name.trim().toLowerCase()))};
   const profileUserCount = ${JSON.stringify(selectableUsers.length)};
   const runLogin = (event) => {
@@ -249,11 +318,11 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
     const password = passwordInput?.value || "";
     let profiles = {};
     try {
-      profiles = JSON.parse(localStorage.getItem("orange-hotel-login-profiles") || "{}");
+      profiles = JSON.parse(localStorage.getItem(profilesStorageKey) || "{}");
     } catch {
       profiles = {};
     }
-    const profile = profiles?.[role] || null;
+    const profile = profiles?.[loginRole] || null;
     const users = Array.isArray(profile?.users) ? profile.users : [];
     const selectableUsers = users.filter((user) => user?.blocked !== true);
     const liveAllowedUsernames = selectableUsers.map((user) => String(user?.username || "").trim().toLowerCase()).filter(Boolean);
@@ -269,22 +338,29 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
       }
       return;
     }
+    localStorage.setItem(sessionUsernameKey, username);
+    localStorage.setItem(sessionRoleKey, loginRole);
+    localStorage.setItem("orange-hotel-role", loginRole);
     localStorage.setItem("orange-hotel-username", username);
-    localStorage.setItem("orange-hotel-role", role);
-    if (role === "manager") {
-      localStorage.setItem(${JSON.stringify(STORAGE_MANAGER_SESSION_VERSION)}, ${JSON.stringify(MANAGER_SESSION_VERSION)});
+    localStorage.setItem("orange-hotel-active-login-scope", ${JSON.stringify(loginScope)});
+    if (loginRole === "manager") {
+      localStorage.setItem(managerSessionKey, ${JSON.stringify(MANAGER_SESSION_VERSION)});
+      localStorage.setItem("orange-hotel-manager-session-version", ${JSON.stringify(MANAGER_SESSION_VERSION)});
     } else {
-      localStorage.removeItem(${JSON.stringify(STORAGE_MANAGER_SESSION_VERSION)});
+      localStorage.removeItem(managerSessionKey);
+      localStorage.removeItem("orange-hotel-manager-session-version");
     }
-    if (role === "cashier") {
+    if (loginRole === "cashier") {
+      localStorage.setItem(shiftStorageKey, "day");
       localStorage.setItem("orange-hotel-shift", "day");
     } else {
+      localStorage.removeItem(shiftStorageKey);
       localStorage.removeItem("orange-hotel-shift");
     }
     window.location.assign(destination);
   };
   const attach = () => {
-    const form = document.querySelector("[data-role-login-form='${role}']");
+    const form = document.querySelector("[data-role-login-form='" + formRole + "']");
     const button = form?.querySelector("[data-role-login-submit]");
     form?.addEventListener("submit", runLogin);
     button?.addEventListener("click", runLogin);
@@ -300,9 +376,9 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
   const handleLogin = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
 
-    const profiles = readLocalLoginProfiles() ?? {};
-    const currentProfile = profiles[role];
-    const loginUsername = username.trim() || config.username;
+    const profiles = readLocalLoginProfiles(loginScope) ?? {};
+    const currentProfile = profiles[activeRole];
+    const loginUsername = username.trim() || roleConfig.username;
     const expectedPassword = getProfilePassword(currentProfile, loginUsername, roleDefaultPassword);
     const normalizedUsername = loginUsername.toLowerCase();
     const allowedUsernames = selectableUsers.map((user) => user.name.trim().toLowerCase());
@@ -319,37 +395,43 @@ const [username, setUsername] = useState(storedUsername ?? config.username);
     }
 
     setError("");
+    localStorage.setItem(sessionUsernameKey, loginUsername);
+    localStorage.setItem(sessionRoleKey, activeRole);
+    localStorage.setItem("orange-hotel-role", activeRole);
     localStorage.setItem("orange-hotel-username", loginUsername);
-localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
-    localStorage.setItem("orange-hotel-role", role);
-    if (role === "manager") {
-      localStorage.setItem(STORAGE_MANAGER_SESSION_VERSION, MANAGER_SESSION_VERSION);
+    localStorage.setItem("orange-hotel-active-login-scope", loginScope);
+    if (activeRole === "manager") {
+      localStorage.setItem(managerSessionKey, MANAGER_SESSION_VERSION);
+      localStorage.setItem("orange-hotel-manager-session-version", MANAGER_SESSION_VERSION);
     } else {
-      localStorage.removeItem(STORAGE_MANAGER_SESSION_VERSION);
+      localStorage.removeItem(managerSessionKey);
+      localStorage.removeItem("orange-hotel-manager-session-version");
     }
 
-    if (role === "cashier") {
+    if (activeRole === "cashier") {
+      localStorage.setItem(shiftStorageKey, shift);
       localStorage.setItem("orange-hotel-shift", shift);
     } else {
+      localStorage.removeItem(shiftStorageKey);
       localStorage.removeItem("orange-hotel-shift");
     }
 
     const nextProfiles: LoginProfiles = {
       ...profiles,
-      [role]: {
+      [activeRole]: {
         ...upsertProfileUser(currentProfile, loginUsername, {
           password: expectedPassword,
           updatedAt: Date.now(),
         }),
-        ...(role === "cashier" ? { shift } : {}),
+        ...(activeRole === "cashier" ? { shift } : {}),
         updatedAt: Date.now(),
       },
     };
 
-    writeLocalLoginProfiles(nextProfiles);
-    void saveLoginProfileToServer(role, nextProfiles[role]!).catch(() => undefined);
+    writeLocalLoginProfiles(nextProfiles, loginScope);
+    void saveLoginProfileToServer(loginScope, activeRole, nextProfiles[activeRole]!).catch(() => undefined);
 
-    window.location.assign(config.destination);
+    window.location.assign(loginDestination);
   };
 
   return (
@@ -361,15 +443,55 @@ localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
           </p>
         </div>
 
-        <div className={cn("w-full max-w-md", isDirector && "max-w-sm")}>
+        <div className={cn("w-full max-w-md", isDirector && "max-w-sm", isHotelTierPage && "max-w-2xl")}>
           <form data-role-login-form={role} className={cn("bg-white border p-8 shadow-sm text-left", isDirector ? "rounded-lg border-black/10 p-4 shadow-xl shadow-black/5 sm:p-5" : "rounded-2xl")} onSubmit={handleLogin}>
             <script dangerouslySetInnerHTML={{ __html: fallbackLoginScript }} />
-            <div className={cn(`${config.color} w-14 h-14 rounded-lg flex items-center justify-center mb-6 shadow-lg shadow-black/5`, isDirector && "mb-4 h-12 w-12")}>
-              <config.icon className="w-8 h-8 text-white" />
+
+            {isHotelTierPage && (
+              <div className="mb-7">
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-muted-foreground">{pageConfig.label}</p>
+                <p className="mt-2 text-sm font-medium text-muted-foreground">
+                  Choose a staff role. These credentials are stored separately from the other hotel.
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {HOTEL_LOGIN_ROLES.map((hotelRole) => {
+                    const option = HOTEL_ROLE_CONFIG[hotelRole];
+                    const selected = selectedRole === hotelRole;
+                    return (
+                      <Link
+                        key={hotelRole}
+                        href={`/${role}/${HOTEL_ROLE_PATHS[hotelRole]}`}
+                        onClick={() => {
+                          setSelectedRole(hotelRole);
+                          setUsername(option.username);
+                          setPassword("");
+                          setError("");
+                          setProfileUsers([]);
+                        }}
+                        className={cn(
+                          "flex items-center gap-2 rounded-xl border-2 px-3 py-3 text-left transition-colors",
+                          selected
+                            ? role === "standard"
+                              ? "border-blue-500 bg-blue-50 text-blue-900"
+                              : "border-amber-500 bg-amber-50 text-amber-950"
+                            : "border-transparent bg-muted/40 hover:bg-muted/70",
+                        )}
+                      >
+                        <option.icon className="h-4 w-4 shrink-0" />
+                        <span className="text-[10px] font-black uppercase tracking-wide">{option.label}</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className={cn(`${roleConfig.color} w-14 h-14 rounded-lg flex items-center justify-center mb-6 shadow-lg shadow-black/5`, isDirector && "mb-4 h-12 w-12")}>
+              <roleConfig.icon className="w-8 h-8 text-white" />
             </div>
-            <h1 className={cn("text-2xl font-black mb-2 tracking-tight uppercase", isDirector && "text-xl sm:text-2xl")}>{config.label}</h1>
+            <h1 className={cn("text-2xl font-black mb-2 tracking-tight uppercase", isDirector && "text-xl sm:text-2xl")}>{roleConfig.label}</h1>
             <p className="text-sm text-muted-foreground font-medium leading-relaxed mb-6">
-              {config.description}
+              {roleConfig.description}
             </p>
 
             {selectableUsers.length > 0 && (
@@ -432,7 +554,7 @@ localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
               </div>
             </div>
 
-            {role === "cashier" && (
+            {activeRole === "cashier" && (
               <div className="space-y-3 mb-6">
                 <span className="text-[10px] font-black uppercase text-muted-foreground tracking-[0.2em]">Select Shift</span>
                 <Tabs value={shift} onValueChange={(value) => setShift(value as "day" | "night")} className="w-full">
@@ -450,7 +572,7 @@ localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
 
             <div className={cn("mb-6 rounded-xl border bg-muted/20 px-4 py-3", isDirector && "mb-4 px-3 py-2")}>
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Synced Default Username: {config.username}
+                Synced Default Username: {roleConfig.username}
               </p>
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mt-1">
                 Default Password: {roleDefaultPassword}
@@ -468,7 +590,7 @@ localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
               onClick={() => handleLogin()}
               className={cn("w-full bg-primary hover:bg-primary/90 text-white font-black uppercase tracking-widest h-14 shadow-lg shadow-primary/20", isDirector ? "rounded-lg" : "rounded-xl")}
             >
-              Enter Dashboard
+              {isHotelTierPage ? `Sign In As ${roleConfig.label}` : "Enter Dashboard"}
             </Button>
 
             {isInstallableRole && !isStandaloneApp && (
@@ -478,14 +600,14 @@ localStorage.setItem(`orange-hotel-username-${role}`, loginUsername);
                     <Smartphone className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-black uppercase tracking-widest text-emerald-950">Install {config.label} Application</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-emerald-950">Install {roleConfig.label} Application</p>
                     <p className="mt-1 text-xs font-semibold leading-5 text-emerald-950/70">
                       {installPrompt
-                        ? `Install this ${config.label} profile as a browser app.`
+                        ? `Install this ${roleConfig.label} profile as a browser app.`
                         : isIosDevice
-                          ? `Use the phone share menu to add ${config.label} to the home screen.`
+                          ? `Use the phone share menu to add ${roleConfig.label} to the home screen.`
                           : isAndroidDevice
-                            ? `Use the browser install option so ${config.label} appears with your phone apps.`
+                            ? `Use the browser install option so ${roleConfig.label} appears with your phone apps.`
                             : "Use your browser on desktop to install this login as an app."}
                     </p>
                   </div>

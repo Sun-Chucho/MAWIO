@@ -6,6 +6,7 @@ import { readJson, writeJson } from "@/app/lib/storage";
 export const STORAGE_LOGIN_PROFILES = "orange-hotel-login-profiles";
 export const STORAGE_ACTIVE_USERNAME = "orange-hotel-username";
 export const SESSION_IDENTITY_EVENT = "orange-hotel-session-identity-updated";
+export type LoginProfileScope = "core" | "standard" | "platinum";
 
 export interface LoginUserAccount {
   username: string;
@@ -29,37 +30,81 @@ export const MANAGER_LOGIN_PASSWORD = "4321";
 export const MANAGER_SESSION_VERSION = "manager-password-4321-v1";
 export const STORAGE_MANAGER_SESSION_VERSION = "orange-hotel-manager-session-version";
 
+const STORAGE_LOGIN_PROFILES_BY_SCOPE: Record<LoginProfileScope, string> = {
+  core: STORAGE_LOGIN_PROFILES,
+  standard: "orange-hotel-login-profiles-standard",
+  platinum: "orange-hotel-login-profiles-platinum",
+};
+
+const STORAGE_ACTIVE_USERNAME_BY_SCOPE: Record<LoginProfileScope, string> = {
+  core: STORAGE_ACTIVE_USERNAME,
+  standard: "orange-hotel-username-standard",
+  platinum: "orange-hotel-username-platinum",
+};
+
+const STORAGE_ACTIVE_ROLE_BY_SCOPE: Record<LoginProfileScope, string> = {
+  core: "orange-hotel-role",
+  standard: "orange-hotel-role-standard",
+  platinum: "orange-hotel-role-platinum",
+};
+
+const STORAGE_MANAGER_SESSION_VERSION_BY_SCOPE: Record<LoginProfileScope, string> = {
+  core: STORAGE_MANAGER_SESSION_VERSION,
+  standard: "orange-hotel-manager-session-version-standard",
+  platinum: "orange-hotel-manager-session-version-platinum",
+};
+
+export function normalizeLoginProfileScope(value: string | null | undefined): LoginProfileScope {
+  return value === "platinum" ? "platinum" : value === "standard" ? "standard" : "core";
+}
+
+export function getLoginProfilesStorageKey(scope: LoginProfileScope = "core") {
+  return STORAGE_LOGIN_PROFILES_BY_SCOPE[scope];
+}
+
+export function getActiveSessionUsernameStorageKey(scope: LoginProfileScope = "core") {
+  return STORAGE_ACTIVE_USERNAME_BY_SCOPE[scope];
+}
+
+export function getActiveSessionRoleStorageKey(scope: LoginProfileScope = "core") {
+  return STORAGE_ACTIVE_ROLE_BY_SCOPE[scope];
+}
+
+export function getManagerSessionVersionStorageKey(scope: LoginProfileScope = "core") {
+  return STORAGE_MANAGER_SESSION_VERSION_BY_SCOPE[scope];
+}
+
 export function getDefaultLoginPassword(role: Role) {
   return role === "manager" ? MANAGER_LOGIN_PASSWORD : DEFAULT_LOGIN_PASSWORD;
 }
 
-function dispatchLoginProfilesUpdated() {
-  window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key: STORAGE_LOGIN_PROFILES } }));
+function dispatchLoginProfilesUpdated(scope: LoginProfileScope) {
+  window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key: getLoginProfilesStorageKey(scope) } }));
 }
 
 function dispatchSessionIdentityUpdated() {
   window.dispatchEvent(new CustomEvent(SESSION_IDENTITY_EVENT));
 }
 
-export function readLocalLoginProfiles() {
+export function readLocalLoginProfiles(scope: LoginProfileScope = "core") {
   if (typeof window === "undefined") return null;
-  return readJson<LoginProfiles>(STORAGE_LOGIN_PROFILES);
+  return readJson<LoginProfiles>(getLoginProfilesStorageKey(scope));
 }
 
-export function writeLocalLoginProfiles(profiles: LoginProfiles) {
+export function writeLocalLoginProfiles(profiles: LoginProfiles, scope: LoginProfileScope = "core") {
   if (typeof window === "undefined") return;
-  writeJson(STORAGE_LOGIN_PROFILES, profiles);
-  dispatchLoginProfilesUpdated();
+  writeJson(getLoginProfilesStorageKey(scope), profiles);
+  dispatchLoginProfilesUpdated(scope);
 }
 
-export function readActiveSessionUsername(fallback = "") {
+export function readActiveSessionUsername(fallback = "", scope: LoginProfileScope = "core") {
   if (typeof window === "undefined") return fallback;
-  return localStorage.getItem(STORAGE_ACTIVE_USERNAME) ?? fallback;
+  return localStorage.getItem(getActiveSessionUsernameStorageKey(scope)) ?? fallback;
 }
 
-export function writeActiveSessionUsername(username: string) {
+export function writeActiveSessionUsername(username: string, scope: LoginProfileScope = "core") {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_ACTIVE_USERNAME, username.trim());
+  localStorage.setItem(getActiveSessionUsernameStorageKey(scope), username.trim());
   dispatchSessionIdentityUpdated();
 }
 
@@ -84,22 +129,36 @@ export function subscribeToSessionIdentity(onChange: () => void) {
   };
 }
 
-export async function hydrateLoginProfilesFromServer() {
+export async function hydrateLoginProfilesFromServer(scope: LoginProfileScope = "core") {
   if (typeof window === "undefined") return null;
 
   try {
-    const response = await fetch("/api/login-profiles", { cache: "no-store" });
+    const params = new URLSearchParams();
+    if (scope !== "core") {
+      params.set("scope", scope);
+    }
+    const response = await fetch(`/api/login-profiles${params.toString() ? `?${params.toString()}` : ""}`, { cache: "no-store" });
     if (!response.ok) return null;
     const profiles = (await response.json()) as LoginProfiles;
-    writeLocalLoginProfiles(profiles ?? {});
+    writeLocalLoginProfiles(profiles ?? {}, scope);
     return profiles ?? {};
   } catch {
     return null;
   }
 }
 
-export async function saveLoginProfileToServer(role: Role, entry: LoginProfileEntry) {
+export function saveLoginProfileToServer(role: Role, entry: LoginProfileEntry): Promise<boolean>;
+export function saveLoginProfileToServer(scope: LoginProfileScope, role: Role, entry: LoginProfileEntry): Promise<boolean>;
+export async function saveLoginProfileToServer(
+  scopeOrRole: LoginProfileScope | Role,
+  roleOrEntry: Role | LoginProfileEntry,
+  scopedEntry?: LoginProfileEntry,
+) {
   if (typeof window === "undefined") return false;
+
+  const scope: LoginProfileScope = scopedEntry ? (scopeOrRole as LoginProfileScope) : "core";
+  const role = scopedEntry ? (roleOrEntry as Role) : (scopeOrRole as Role);
+  const entry = scopedEntry ?? (roleOrEntry as LoginProfileEntry);
 
   try {
     const response = await fetch("/api/login-profiles", {
@@ -107,12 +166,12 @@ export async function saveLoginProfileToServer(role: Role, entry: LoginProfileEn
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ role, entry }),
+      body: JSON.stringify({ scope, role, entry }),
     });
 
     if (!response.ok) return false;
     const profiles = (await response.json()) as LoginProfiles;
-    writeLocalLoginProfiles(profiles ?? {});
+    writeLocalLoginProfiles(profiles ?? {}, scope);
     return true;
   } catch {
     return false;
