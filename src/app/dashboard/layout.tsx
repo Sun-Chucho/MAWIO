@@ -1077,6 +1077,7 @@ export default function DashboardLayout({
   const [usernameDraft, setUsernameDraft] = useState("");
   const [usernameSaving, setUsernameSaving] = useState(false);
   const [usernameFeedback, setUsernameFeedback] = useState<string | null>(null);
+  const [currentHotelView, setCurrentHotelView] = useState<"standard" | "platinum">("standard");
 
   const allowedByRole: Record<Role, string[]> = {
     manager: ['/dashboard', '/dashboard/rooms', '/dashboard/inventory', '/dashboard/inventory/kitchen-stock', '/dashboard/inventory/barista-stock', '/dashboard/menu-create', '/dashboard/company-stock', '/dashboard/cashier', '/dashboard/laundry', '/dashboard/expenses', '/dashboard/finances', '/dashboard/payments', '/dashboard/kitchen', '/dashboard/cancelled', '/dashboard/barista', '/dashboard/staff', '/dashboard/settings', '/dashboard/settings/sync', '/dashboard/settings/password'],
@@ -1129,6 +1130,7 @@ export default function DashboardLayout({
 
       localStorage.setItem("orange-hotel-role", savedRole);
       localStorage.setItem("orange-hotel-active-login-scope", activeHotelScope);
+      setCurrentHotelView(activeHotelScope === "platinum" ? "platinum" : "standard");
       setActiveUsername(readActiveSessionUsername(savedRole, activeHotelScope === "platinum" ? "platinum" : "standard"));
       setRole(savedRole);
       if (savedShift) setShift(savedShift);
@@ -1213,6 +1215,20 @@ export default function DashboardLayout({
   }, [mounted, pathname, role, router]);
 
   const isDirector = role === "director";
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isDirector) return;
+
+    const handleHotelViewChanged = (event: CustomEvent) => {
+      const hotel = event.detail?.hotel;
+      if (hotel === "standard" || hotel === "platinum") {
+        window.location.reload();
+      }
+    };
+
+    window.addEventListener("hotel-view-changed", handleHotelViewChanged as EventListener);
+    return () => window.removeEventListener("hotel-view-changed", handleHotelViewChanged as EventListener);
+  }, [isDirector]);
   const directorCurrentLabel =
     DIRECTOR_MOBILE_NAV.find((item) => item.href === pathname)?.label ??
     (pathname.includes("/inventory") ? "Stock" : pathname.includes("/settings") ? "Settings" : "Dashboard");
@@ -1278,13 +1294,47 @@ export default function DashboardLayout({
                 <Clock className="w-3 h-3 mr-1" /> {shift}
               </Badge>
             )}
-            <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
-              typeof window !== 'undefined' && getLocalMawioTier() === "platinum"
-                ? "border-amber-500 text-amber-600 bg-amber-50"
-                : "border-blue-500 text-blue-600 bg-blue-50"
-            )}>
-              {typeof window !== 'undefined' && getLocalMawioTier() === "platinum" ? "Premium Hotel" : "Standard Hotel"}
-            </Badge>
+            {isDirector ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextHotel: "standard" | "platinum" = currentHotelView === "standard" ? "platinum" : "standard";
+                    setCurrentHotelView(nextHotel);
+                    if (typeof window !== "undefined") {
+                      localStorage.setItem("orange-hotel-active-login-scope", nextHotel);
+                      window.dispatchEvent(new CustomEvent("hotel-view-changed", { detail: { hotel: nextHotel } }));
+                    }
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all border-2",
+                    currentHotelView === "standard"
+                      ? "border-blue-500 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                      : "border-amber-500 bg-amber-50 text-amber-600 hover:bg-amber-100"
+                  )}
+                >
+                  <span>Switch to {currentHotelView === "standard" ? "Premium" : "Standard"}</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12M8 17h12M14 12H2" />
+                  </svg>
+                </button>
+                <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
+                  currentHotelView === "platinum"
+                    ? "border-amber-500 text-amber-600 bg-amber-50"
+                    : "border-blue-500 text-blue-600 bg-blue-50"
+                )}>
+                  {currentHotelView === "platinum" ? "Premium Hotel" : "Standard Hotel"}
+                </Badge>
+              </div>
+            ) : (
+              <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
+                typeof window !== 'undefined' && getLocalMawioTier() === "platinum"
+                  ? "border-amber-500 text-amber-600 bg-amber-50"
+                  : "border-blue-500 text-blue-600 bg-blue-50"
+              )}>
+                {typeof window !== 'undefined' && getLocalMawioTier() === "platinum" ? "Premium Hotel" : "Standard Hotel"}
+              </Badge>
+            )}
             
             <div className={cn("flex items-center gap-4 text-muted-foreground", isDirector && "hidden md:flex")}>
               <SyncStatusIndicator />
