@@ -116,8 +116,13 @@ export function getMawioTier(): "standard" | "platinum" {
     const queryTier = params.get("tier");
     if (queryTier === "standard" || queryTier === "platinum") {
       window.localStorage.setItem("mawio-tier", queryTier);
+      window.localStorage.setItem("orange-hotel-active-login-scope", queryTier);
       return queryTier;
     }
+    // The active login scope is the single source of truth for which hotel the
+    // user is signed into. Fall back to the legacy `mawio-tier` flag for safety.
+    const activeScope = window.localStorage.getItem("orange-hotel-active-login-scope");
+    if (activeScope === "standard" || activeScope === "platinum") return activeScope;
     const localTier = window.localStorage.getItem("mawio-tier");
     if (localTier === "standard" || localTier === "platinum") return localTier;
   }
@@ -126,6 +131,25 @@ export function getMawioTier(): "standard" | "platinum" {
 
 function toStoragePath(key: string) {
   return `${FIREBASE_STORAGE_ROOT}/${getMawioTier()}/${key.replace(/[.#$[\]/]/g, "-")}`;
+}
+
+// ── Tier-scoped local cache keys ────────────────────────────────────────────
+// Backend separation already happens through the Firebase path / server `tier`
+// param (`mawio/{tier}/{key}`). The browser localStorage cache, however, is a
+// single shared bucket, so without scoping the two hotels would clobber each
+// other locally and merge on the next sync. We therefore namespace every synced
+// business key for the premium (platinum) tier. Standard keeps the bare keys so
+// existing standard data continues to load unchanged.
+//
+// Login profiles are intentionally excluded: they have their own dedicated
+// per-scope keys (`...-standard` / `...-platinum`) managed in login-profiles.ts.
+// (`TIER_SCOPED_KEYS` / `TIER_SHARED_KEYS` are defined below, after the key
+// lists they are built from.)
+export function getTierScopedLocalKey(baseKey: string): string {
+  if (typeof window === "undefined") return baseKey;
+  if (getMawioTier() !== "platinum") return baseKey;
+  if (!TIER_SCOPED_KEYS.has(baseKey)) return baseKey;
+  return `${baseKey}::platinum`;
 }
 
 export const FIREBASE_SYNC_KEYS = [
@@ -175,13 +199,21 @@ export const LEGACY_DEMO_KEYS = [
   "orange-hotel-barista-payments",
   "orange-hotel-barista-menu",
   "orange-hotel-kitchen-cancelled-tickets",
+  "orange-hotel-cashier-seq",
+  "orange-hotel-kitchen-seq",
+  "orange-hotel-barista-seq",
 ] as const;
+
+const TIER_SHARED_KEYS = new Set<string>(["orange-hotel-login-profiles"]);
+const TIER_SCOPED_KEYS = new Set<string>(
+  [...FIREBASE_SYNC_KEYS, ...LEGACY_DEMO_KEYS].filter((key) => !TIER_SHARED_KEYS.has(key)),
+);
 
 
 
 function readParsedLocalValue<T>(key: string) {
   if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(key);
+  const raw = localStorage.getItem(getTierScopedLocalKey(key));
   if (!raw) return null;
 
   try {
@@ -189,6 +221,23 @@ function readParsedLocalValue<T>(key: string) {
   } catch {
     return null;
   }
+}
+
+// Physical localStorage writes/reads for synced keys must always go through the
+// tier-scoped key so the two hotels never share a cache bucket.
+function setLocalCache(key: string, rawValue: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(getTierScopedLocalKey(key), rawValue);
+}
+
+function removeLocalCache(key: string) {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(getTierScopedLocalKey(key));
+}
+
+function getLocalCacheRaw(key: string) {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(getTierScopedLocalKey(key));
 }
 
 function sanitizeSyncedValue<T>(key: string, value: T): T {
@@ -218,28 +267,28 @@ function mirrorCanonicalStateToLegacyLocal(key: string, value: unknown) {
 
   if (key === "orange-hotel-cashier-state") {
     const snapshot = value as { transactions?: unknown[]; receiptSeq?: number };
-    localStorage.setItem("orange-hotel-cashier-transactions", JSON.stringify(Array.isArray(snapshot.transactions) ? snapshot.transactions : []));
-    localStorage.setItem("orange-hotel-cashier-seq", String(Number.isFinite(snapshot.receiptSeq) ? snapshot.receiptSeq : 84920));
+    setLocalCache("orange-hotel-cashier-transactions", JSON.stringify(Array.isArray(snapshot.transactions) ? snapshot.transactions : []));
+    setLocalCache("orange-hotel-cashier-seq", String(Number.isFinite(snapshot.receiptSeq) ? snapshot.receiptSeq : 84920));
     localStorage.removeItem("orange-hotel-demo-seed-version");
     return;
   }
 
   if (key === "orange-hotel-kitchen-state") {
     const snapshot = sanitizeSyncedValue(key, value) as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[] };
-    localStorage.setItem("orange-hotel-kitchen-tickets", JSON.stringify(Array.isArray(snapshot.tickets) ? snapshot.tickets : []));
-    localStorage.setItem("orange-hotel-kitchen-seq", String(Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : 300));
-    localStorage.setItem("orange-hotel-kitchen-payments", JSON.stringify(Array.isArray(snapshot.payments) ? snapshot.payments : []));
-    localStorage.setItem("orange-hotel-kitchen-menu", JSON.stringify(Array.isArray(snapshot.menuItems) ? snapshot.menuItems : []));
+    setLocalCache("orange-hotel-kitchen-tickets", JSON.stringify(Array.isArray(snapshot.tickets) ? snapshot.tickets : []));
+    setLocalCache("orange-hotel-kitchen-seq", String(Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : 300));
+    setLocalCache("orange-hotel-kitchen-payments", JSON.stringify(Array.isArray(snapshot.payments) ? snapshot.payments : []));
+    setLocalCache("orange-hotel-kitchen-menu", JSON.stringify(Array.isArray(snapshot.menuItems) ? snapshot.menuItems : []));
     localStorage.removeItem("orange-hotel-demo-seed-version");
     return;
   }
 
   if (key === "orange-hotel-barista-state") {
     const snapshot = value as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[] };
-    localStorage.setItem("orange-hotel-barista-orders", JSON.stringify(Array.isArray(snapshot.tickets) ? snapshot.tickets : []));
-    localStorage.setItem("orange-hotel-barista-seq", String(Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : 490));
-    localStorage.setItem("orange-hotel-barista-payments", JSON.stringify(Array.isArray(snapshot.payments) ? snapshot.payments : []));
-    localStorage.setItem("orange-hotel-barista-menu", JSON.stringify(Array.isArray(snapshot.menuItems) ? snapshot.menuItems : []));
+    setLocalCache("orange-hotel-barista-orders", JSON.stringify(Array.isArray(snapshot.tickets) ? snapshot.tickets : []));
+    setLocalCache("orange-hotel-barista-seq", String(Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : 490));
+    setLocalCache("orange-hotel-barista-payments", JSON.stringify(Array.isArray(snapshot.payments) ? snapshot.payments : []));
+    setLocalCache("orange-hotel-barista-menu", JSON.stringify(Array.isArray(snapshot.menuItems) ? snapshot.menuItems : []));
     localStorage.removeItem("orange-hotel-demo-seed-version");
   }
 }
@@ -701,7 +750,7 @@ function getLocalFallbackForSync(key: string) {
 
   if (key === "orange-hotel-cashier-state") {
     const transactions = readParsedLocalValue<unknown[]>("orange-hotel-cashier-transactions") ?? [];
-    const receiptSeq = Number(localStorage.getItem("orange-hotel-cashier-seq"));
+    const receiptSeq = Number(getLocalCacheRaw("orange-hotel-cashier-seq"));
     if (transactions.length === 0 && !Number.isFinite(receiptSeq)) return null;
     return {
       transactions,
@@ -715,7 +764,7 @@ function getLocalFallbackForSync(key: string) {
     const menuItems = mergeKitchenMenuItems(
       ((readParsedLocalValue<unknown[]>("orange-hotel-kitchen-menu") ?? []) as KitchenMenuItem[]),
     );
-    const ticketSeq = Number(localStorage.getItem("orange-hotel-kitchen-seq"));
+    const ticketSeq = Number(getLocalCacheRaw("orange-hotel-kitchen-seq"));
     if (tickets.length === 0 && payments.length === 0 && menuItems.length === 0 && !Number.isFinite(ticketSeq)) {
       return null;
     }
@@ -731,7 +780,7 @@ function getLocalFallbackForSync(key: string) {
     const tickets = readParsedLocalValue<unknown[]>("orange-hotel-barista-orders") ?? [];
     const payments = readParsedLocalValue<unknown[]>("orange-hotel-barista-payments") ?? [];
     const menuItems = readParsedLocalValue<unknown[]>("orange-hotel-barista-menu") ?? [];
-    const ticketSeq = Number(localStorage.getItem("orange-hotel-barista-seq"));
+    const ticketSeq = Number(getLocalCacheRaw("orange-hotel-barista-seq"));
     if (tickets.length === 0 && payments.length === 0 && menuItems.length === 0 && !Number.isFinite(ticketSeq)) {
       return null;
     }
@@ -800,13 +849,13 @@ function mergeRemoteValueForLocalApply(key: string, remoteValue: unknown) {
 function readSnapshotValue<T>(key: string, rawValue: T | null, onChange: (value: T | null) => void) {
   if (typeof window === "undefined") return;
   if (rawValue === null) {
-    localStorage.removeItem(key);
+    removeLocalCache(key);
     dispatchStorageUpdated(key);
     onChange(null);
     return;
   }
 
-  localStorage.setItem(key, JSON.stringify(rawValue));
+  setLocalCache(key, JSON.stringify(rawValue));
   dispatchStorageUpdated(key);
   onChange(rawValue);
 }
@@ -855,7 +904,7 @@ export async function hydrateStorageKeyFromFirebase(key: string) {
   const applyHydratedValue = (value: unknown) => {
     const sanitizedValue = sanitizeForStorage(sanitizeSyncedValue(key, value));
     if (sanitizedValue === null || sanitizedValue === undefined) return null;
-    localStorage.setItem(key, JSON.stringify(sanitizedValue));
+    setLocalCache(key, JSON.stringify(sanitizedValue));
     mirrorCanonicalStateToLegacyLocal(key, sanitizedValue);
     dispatchStorageUpdated(key);
     return sanitizedValue;
@@ -928,7 +977,7 @@ export function subscribeToSyncedStorageKey<T>(key: string, onChange: (value: T 
   }
 
   const emitLocalValue = () => {
-    const raw = localStorage.getItem(key);
+    const raw = getLocalCacheRaw(key);
     if (!raw) {
       onChange(null);
       return;
@@ -947,7 +996,7 @@ export function subscribeToSyncedStorageKey<T>(key: string, onChange: (value: T 
   };
 
   const handleStorageEvent = (event: StorageEvent) => {
-    if (event.key === key) emitLocalValue();
+    if (event.key === key || event.key === getTierScopedLocalKey(key)) emitLocalValue();
   };
 
   window.addEventListener("orange-hotel-storage-updated", handleCustomEvent as EventListener);
@@ -972,7 +1021,7 @@ export function subscribeToSyncedStorageKey<T>(key: string, onChange: (value: T 
       const nextValue = sanitizeForStorage(sanitizeSyncedValue(key, mergeRemoteValueForLocalApply(key, remoteValue)));
       const currentValue = sanitizeForStorage(readParsedLocalValue<T>(key));
       if (!areSnapshotsEqual(currentValue, nextValue)) {
-        localStorage.setItem(key, JSON.stringify(nextValue));
+        setLocalCache(key, JSON.stringify(nextValue));
         mirrorCanonicalStateToLegacyLocal(key, nextValue);
         dispatchStorageUpdated(key);
         onChange(nextValue as T);
@@ -1004,7 +1053,7 @@ export function subscribeToSyncedStorageKey<T>(key: string, onChange: (value: T 
           if (!snapshot.exists()) {
             const fallbackValue = sanitizeForStorage((getLocalFallbackForSync(key) ?? getCanonicalDefaultValue(key)) as T | null);
             if (fallbackValue !== null) {
-              localStorage.setItem(key, JSON.stringify(fallbackValue));
+              setLocalCache(key, JSON.stringify(fallbackValue));
               mirrorCanonicalStateToLegacyLocal(key, fallbackValue);
               void set(ref(firebaseDatabase, toStoragePath(key)), fallbackValue).catch(() => undefined);
               dispatchStorageUpdated(key);
@@ -1072,7 +1121,7 @@ export function clearLocalBusinessState() {
   if (typeof window === "undefined") return;
 
   [...FIREBASE_SYNC_KEYS, ...LEGACY_DEMO_KEYS].forEach((key) => {
-    localStorage.removeItem(key);
+    removeLocalCache(key);
   });
 }
 
@@ -1120,7 +1169,7 @@ function countRecords(value: unknown): number {
 
 export function getSyncDiagnostics(): SyncDiagnostics {
   const keys: SyncKeyDiagnostic[] = FIREBASE_SYNC_KEYS.map((key) => {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(key) : null;
+    const raw = typeof window !== "undefined" ? getLocalCacheRaw(key) : null;
     let localRecordCount = 0;
     if (raw) {
       try {
@@ -1175,9 +1224,9 @@ export async function getRemoteRecordCounts(): Promise<Record<string, number>> {
 export async function wipeStorageCategory(key: string) {
   if (typeof window === "undefined") return;
   const defaultValue = sanitizeForStorage(getCanonicalDefaultValue(key));
-  
+
   // Wipe locally
-  localStorage.setItem(key, JSON.stringify(defaultValue));
+  setLocalCache(key, JSON.stringify(defaultValue));
   
   try {
     await ensureFirebaseAuthReady();

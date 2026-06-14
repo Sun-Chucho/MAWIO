@@ -1114,6 +1114,7 @@ export default function DashboardLayout({
         localStorage.removeItem('orange-hotel-shift');
         localStorage.removeItem(STORAGE_MANAGER_SESSION_VERSION);
         localStorage.removeItem('orange-hotel-active-login-scope');
+        localStorage.removeItem('mawio-tier');
         router.replace('/');
         return;
       }
@@ -1124,12 +1125,14 @@ export default function DashboardLayout({
         localStorage.removeItem("orange-hotel-username");
         localStorage.removeItem(STORAGE_MANAGER_SESSION_VERSION);
         localStorage.removeItem('orange-hotel-active-login-scope');
+        localStorage.removeItem('mawio-tier');
         router.replace("/MANAGER");
         return;
       }
 
       localStorage.setItem("orange-hotel-role", savedRole);
       localStorage.setItem("orange-hotel-active-login-scope", activeHotelScope);
+      localStorage.setItem("mawio-tier", activeHotelScope === "platinum" ? "platinum" : "standard");
       setCurrentHotelView(activeHotelScope === "platinum" ? "platinum" : "standard");
       setActiveUsername(readActiveSessionUsername(savedRole, activeHotelScope === "platinum" ? "platinum" : "standard"));
       setRole(savedRole);
@@ -1236,7 +1239,7 @@ export default function DashboardLayout({
   if (!mounted) return null;
 
   return (
-    <div className={cn("flex h-[100dvh] w-full overflow-hidden bg-background", isDirector && "bg-[#f4f7f2] md:bg-background")}>
+    <div className={cn("flex h-[100dvh] w-full overflow-hidden bg-background", currentHotelView === "platinum" ? "tier-platinum" : "tier-standard", isDirector && "bg-[#f4f7f2] md:bg-background")}>
       <aside
         className={cn(
           "fixed left-0 top-0 z-50 h-[100dvh] w-64 transition-transform duration-300",
@@ -1303,6 +1306,7 @@ export default function DashboardLayout({
                     setCurrentHotelView(nextHotel);
                     if (typeof window !== "undefined") {
                       localStorage.setItem("orange-hotel-active-login-scope", nextHotel);
+                      localStorage.setItem("mawio-tier", nextHotel);
                       window.dispatchEvent(new CustomEvent("hotel-view-changed", { detail: { hotel: nextHotel } }));
                     }
                   }}

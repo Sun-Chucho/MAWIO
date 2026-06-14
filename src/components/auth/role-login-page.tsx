@@ -343,6 +343,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     localStorage.setItem("orange-hotel-role", loginRole);
     localStorage.setItem("orange-hotel-username", username);
     localStorage.setItem("orange-hotel-active-login-scope", ${JSON.stringify(loginScope)});
+    localStorage.setItem("mawio-tier", ${JSON.stringify(loginScope === "platinum" ? "platinum" : "standard")});
     if (loginRole === "manager") {
       localStorage.setItem(managerSessionKey, ${JSON.stringify(MANAGER_SESSION_VERSION)});
       localStorage.setItem("orange-hotel-manager-session-version", ${JSON.stringify(MANAGER_SESSION_VERSION)});
@@ -400,6 +401,10 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     localStorage.setItem("orange-hotel-role", activeRole);
     localStorage.setItem("orange-hotel-username", loginUsername);
     localStorage.setItem("orange-hotel-active-login-scope", loginScope);
+    // Keep the hotel data tier in lock-step with the login scope so all synced
+    // business data resolves to the correct hotel. Core logins (generic manager /
+    // director) default to standard; the director can switch hotels afterwards.
+    localStorage.setItem("mawio-tier", loginScope === "platinum" ? "platinum" : "standard");
     if (activeRole === "manager") {
       localStorage.setItem(managerSessionKey, MANAGER_SESSION_VERSION);
       localStorage.setItem("orange-hotel-manager-session-version", MANAGER_SESSION_VERSION);

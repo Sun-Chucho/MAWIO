@@ -11,9 +11,11 @@ interface ActiveBookingRoom {
 
 export const STORAGE_ROOMS = "orange-hotel-rooms-state";
 
-function getRoomStorageKey(scope?: "standard" | "platinum"): string {
-  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
-  return activeScope === "platinum" ? "orange-hotel-rooms-state-platinum" : STORAGE_ROOMS;
+// Per-tier separation of the rooms cache is handled centrally by the storage
+// layer (readJson/writeJson namespace the key by the active hotel). The room
+// defaults and pricing below still vary by scope.
+function getRoomStorageKey(): string {
+  return STORAGE_ROOMS;
 }
 
 function getDefaultRoomsByType(type: "Standard" | "Platinum"): Room[] {
@@ -65,7 +67,7 @@ function normalizeRoomRates(rooms: Room[], scope: "standard" | "platinum"): Room
 
 export function readRoomsState(scope?: "standard" | "platinum"): Room[] {
   const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
-  const key = getRoomStorageKey(activeScope);
+  const key = getRoomStorageKey();
   const saved = readJson<Room[]>(key);
   if (!Array.isArray(saved) || saved.length === 0) {
     return getDefaultRooms(activeScope);
@@ -73,8 +75,8 @@ export function readRoomsState(scope?: "standard" | "platinum"): Room[] {
   return normalizeRoomRates(saved, activeScope);
 }
 
-function hasSavedRoomsState(scope?: "standard" | "platinum"): boolean {
-  const key = getRoomStorageKey(scope);
+function hasSavedRoomsState(): boolean {
+  const key = getRoomStorageKey();
   const saved = readJson<Room[]>(key);
   return Array.isArray(saved) && saved.length > 0;
 }
@@ -82,7 +84,7 @@ function hasSavedRoomsState(scope?: "standard" | "platinum"): boolean {
 export function writeRoomsState(rooms: Room[], scope?: "standard" | "platinum") {
   const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
   const normalizedRooms = normalizeRoomRates(rooms, activeScope);
-  const key = getRoomStorageKey(activeScope);
+  const key = getRoomStorageKey();
   const saved = readJson<Room[]>(key);
   if (Array.isArray(saved) && JSON.stringify(saved) === JSON.stringify(normalizedRooms)) return;
   writeJson(key, normalizedRooms);
@@ -91,7 +93,7 @@ export function writeRoomsState(rooms: Room[], scope?: "standard" | "platinum") 
 function readBaseRooms(baseRooms?: Room[], scope?: "standard" | "platinum") {
   return Array.isArray(baseRooms) && baseRooms.length > 0
     ? baseRooms
-    : hasSavedRoomsState(scope)
+    : hasSavedRoomsState()
       ? readRoomsState(scope)
       : getDefaultRooms(scope);
 }

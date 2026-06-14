@@ -1,26 +1,29 @@
-import { removeStorageValueFromFirebase, syncStorageValueToFirebase } from "@/app/lib/firebase-sync";
+import { getTierScopedLocalKey, removeStorageValueFromFirebase, syncStorageValueToFirebase } from "@/app/lib/firebase-sync";
 import { sanitizeForStorage } from "@/app/lib/storage-sanitize";
-import { getLocalMawioTier } from "./login-profiles";
 
 export const STORAGE_CASHIER_STATE = "orange-hotel-cashier-state";
 export const STORAGE_KITCHEN_STATE = "orange-hotel-kitchen-state";
 export const STORAGE_BARISTA_STATE = "orange-hotel-barista-state";
 
-export function getScopedStorageKey(baseKey: string, scope?: "standard" | "platinum"): string {
-  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
-  return activeScope === "platinum" ? `${baseKey}-platinum` : baseKey;
+// Tier separation (standard vs premium/platinum) is now handled centrally inside
+// the storage layer: every read/write of a synced business key is transparently
+// namespaced per hotel by `getTierScopedLocalKey`. Callers therefore always use
+// the bare/base key — these helpers exist for backwards compatibility and simply
+// return the base key.
+export function getScopedStorageKey(baseKey: string): string {
+  return baseKey;
 }
 
 export function getActiveCashierStateKey(): string {
-  return getScopedStorageKey(STORAGE_CASHIER_STATE);
+  return STORAGE_CASHIER_STATE;
 }
 
 export function getActiveBaristaStateKey(): string {
-  return getScopedStorageKey(STORAGE_BARISTA_STATE);
+  return STORAGE_BARISTA_STATE;
 }
 
 export function getActiveKitchenStateKey(): string {
-  return getScopedStorageKey(STORAGE_KITCHEN_STATE);
+  return STORAGE_KITCHEN_STATE;
 }
 
 interface CashierState<TTransaction> {
@@ -37,7 +40,7 @@ interface PosState<TTicket, TPayment, TMenu> {
 
 export function readJson<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(key);
+  const raw = localStorage.getItem(getTierScopedLocalKey(key));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as T;
@@ -49,14 +52,16 @@ export function readJson<T>(key: string): T | null {
 export function writeJson<T>(key: string, value: T) {
   if (typeof window === "undefined") return;
   const sanitizedValue = sanitizeForStorage(value);
-  localStorage.setItem(key, JSON.stringify(sanitizedValue));
+  // Local cache is namespaced per hotel tier; the base key is used for the
+  // change event and backend sync (which adds its own tier prefix to the path).
+  localStorage.setItem(getTierScopedLocalKey(key), JSON.stringify(sanitizedValue));
   window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key } }));
   syncStorageValueToFirebase(key, sanitizedValue);
 }
 
 export function removeJson(key: string) {
   if (typeof window === "undefined") return;
-  localStorage.removeItem(key);
+  localStorage.removeItem(getTierScopedLocalKey(key));
   window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key } }));
   removeStorageValueFromFirebase(key);
 }
@@ -76,7 +81,7 @@ export function readCashierState<TTransaction>(
   }
 
   const transactions = readJson<TTransaction[]>(legacyTransactionsKey) ?? [];
-  const legacySeqRaw = typeof window === "undefined" ? null : localStorage.getItem(legacySeqKey);
+  const legacySeqRaw = typeof window === "undefined" ? null : localStorage.getItem(getTierScopedLocalKey(legacySeqKey));
   const parsedSeq = Number(legacySeqRaw);
 
   return {
@@ -110,7 +115,7 @@ export function readPosState<TTicket, TPayment, TMenu>(
   const tickets = readJson<TTicket[]>(legacyTicketsKey) ?? [];
   const payments = readJson<TPayment[]>(legacyPaymentsKey) ?? [];
   const menuItems = readJson<TMenu[]>(legacyMenuKey) ?? [];
-  const legacySeqRaw = typeof window === "undefined" ? null : localStorage.getItem(legacySeqKey);
+  const legacySeqRaw = typeof window === "undefined" ? null : localStorage.getItem(getTierScopedLocalKey(legacySeqKey));
   const parsedSeq = Number(legacySeqRaw);
 
   return {
