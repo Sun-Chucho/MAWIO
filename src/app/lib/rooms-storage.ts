@@ -22,7 +22,32 @@ function getDefaultRoomsByType(type: "Standard" | "Platinum"): Room[] {
 
 export function getDefaultRooms(scope?: "standard" | "platinum"): Room[] {
   const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
-  return activeScope === "platinum" ? getDefaultRoomsByType("Platinum") : getDefaultRoomsByType("Standard");
+  if (activeScope === "platinum") {
+    const { PREMIUM_STANDARD_ROOM_PRICE, PREMIUM_DELUXE_ROOM_PRICE } = require("./mock-data");
+    const standardRooms: Room[] = [
+      "301", "302", "303", "304", "305", "306", "307", "308", "309", "310"
+    ].map((number) => ({
+      id: `r${number}`,
+      number,
+      type: "Standard",
+      status: "available" as Room["status"],
+      price: PREMIUM_STANDARD_ROOM_PRICE,
+    }));
+
+    const deluxeRooms: Room[] = [
+      "311", "312", "313", "314", "315", "316", "317", "318", "319", "320"
+    ].map((number) => ({
+      id: `r${number}`,
+      number,
+      type: "Platinum",
+      status: "available" as Room["status"],
+      price: PREMIUM_DELUXE_ROOM_PRICE,
+    }));
+
+    return [...standardRooms, ...deluxeRooms];
+  }
+
+  return getDefaultRoomsByType("Standard").concat(getDefaultRoomsByType("Platinum"));
 }
 
 function getRoomRateByType(type: Room["type"]) {

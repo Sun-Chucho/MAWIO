@@ -66,6 +66,12 @@ const ROOM_RATE: Record<RoomType, number> = {
   platinum: PLATINUM_ROOM_PRICE,
 };
 
+function getRoomTypeLabel(roomType: RoomType, hotelScope?: "standard" | "platinum"): string {
+  const scope = hotelScope ?? getLocalMawioTier();
+  if (roomType === "standard") return "Standard";
+  return scope === "platinum" ? "Deluxe" : "Premium";
+}
+
 const SPECIAL_PACKAGES: Record<
   SpecialPackage,
   { label: string; currency: BookingCurrency; standardRate: number; platinumRate: number }
@@ -786,7 +792,7 @@ export default function BookingPage() {
                   roomType === "standard" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
                 }`}
               >
-                Standard
+                {getRoomTypeLabel("standard")}
               </button>
               <button
                 type="button"
@@ -798,7 +804,7 @@ export default function BookingPage() {
                   roomType === "platinum" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
                 }`}
               >
-                Premium
+                {getRoomTypeLabel("platinum")}
               </button>
             </div>
             {selectedRoomNumber && (
@@ -828,7 +834,7 @@ export default function BookingPage() {
                   placeholder="Rate per night"
                 />
                 <div className="rounded-md border px-3 py-2 text-sm font-black uppercase tracking-widest text-muted-foreground">
-                  {roomType === "standard" ? "Standard" : "Premium"} package rate: {packageConfig.currency} {rate.toLocaleString()}
+                  {getRoomTypeLabel(roomType)} package rate: {packageConfig.currency} {rate.toLocaleString()}
                   {packageConfig.currency === "$" ? ` | TSh ${accountingRate.toLocaleString()} accounting` : ""}
                 </div>
               </div>
@@ -1020,7 +1026,7 @@ export default function BookingPage() {
           <Card className="w-full max-w-2xl">
             <CardHeader>
               <CardTitle className="text-xl font-black uppercase tracking-tight">
-                {roomType === "standard" ? "Standard" : "Premium"} Rooms
+                {getRoomTypeLabel(roomType)} Rooms
               </CardTitle>
               <CardDescription>Select from all rooms. Only available rooms can be booked.</CardDescription>
             </CardHeader>
