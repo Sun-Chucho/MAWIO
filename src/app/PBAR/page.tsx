@@ -4,9 +4,9 @@ import { RoleLoginPage } from "@/components/auth/role-login-page";
 export const metadata: Metadata = {
   title: "MAWIO Premium Barista POS",
   description: "Premium barista POS login page for MAWIO.",
-  manifest: "/api/pwa-manifest/barista",
+  manifest: "/api/pwa-manifest/barista?tier=platinum",
 };
 
 export default function PremiumBaristaPosPage() {
-  return <RoleLoginPage role="barista" />;
+  return <RoleLoginPage role="platinum" initialHotelRole="barista" />;
 }

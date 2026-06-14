@@ -59,7 +59,7 @@ const ROLE_MANIFESTS = {
 } as const;
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ role: string }> },
 ) {
   const { role } = await context.params;
@@ -69,13 +69,67 @@ export async function GET(
     return NextResponse.json({ error: "Manifest not found." }, { status: 404 });
   }
 
+  const tier = request.nextUrl.searchParams.get("tier");
+  let startUrl: string = manifest.start_url;
+  let name: string = manifest.name;
+  let shortName: string = manifest.short_name;
+
+  if (tier === "standard") {
+    if (role === "barista") {
+      startUrl = "/SBAR";
+      name = "MAWIO Standard Barista POS";
+      shortName = "Std Barista";
+    } else if (role === "kitchen") {
+      startUrl = "/SKIT";
+      name = "MAWIO Standard Kitchen POS";
+      shortName = "Std Kitchen";
+    } else if (role === "manager") {
+      startUrl = "/smanager";
+      name = "MAWIO Standard Manager";
+      shortName = "Std Manager";
+    } else if (role === "inventory") {
+      startUrl = "/SIM";
+      name = "MAWIO Standard Inventory";
+      shortName = "Std Inventory";
+    } else if (role === "cashier") {
+      startUrl = "/SRB";
+      name = "MAWIO Standard Reception";
+      shortName = "Std Reception";
+    }
+  } else if (tier === "platinum") {
+    if (role === "barista") {
+      startUrl = "/PBAR";
+      name = "MAWIO Premium Barista POS";
+      shortName = "Prem Barista";
+    } else if (role === "kitchen") {
+      startUrl = "/PKIT";
+      name = "MAWIO Premium Kitchen POS";
+      shortName = "Prem Kitchen";
+    } else if (role === "manager") {
+      startUrl = "/pmanager";
+      name = "MAWIO Premium Manager";
+      shortName = "Prem Manager";
+    } else if (role === "inventory") {
+      startUrl = "/PIM";
+      name = "MAWIO Premium Inventory";
+      shortName = "Prem Inventory";
+    } else if (role === "cashier") {
+      startUrl = "/PRB";
+      name = "MAWIO Premium Reception";
+      shortName = "Prem Reception";
+    }
+  }
+
   return new NextResponse(
     JSON.stringify({
       ...manifest,
+      name,
+      short_name: shortName,
       display: "standalone",
       display_override: ["standalone", "minimal-ui"],
-      start_url: manifest.start_url,
-      scope: "scope" in manifest ? manifest.scope : manifest.start_url,
+      start_url: startUrl,
+      scope: startUrl,
+      id: startUrl,
       background_color: manifest.background_color,
       theme_color: manifest.theme_color,
       categories: ["business", "productivity"],

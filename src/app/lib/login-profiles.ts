@@ -8,6 +8,20 @@ export const STORAGE_ACTIVE_USERNAME = "orange-hotel-username";
 export const SESSION_IDENTITY_EVENT = "orange-hotel-session-identity-updated";
 export type LoginProfileScope = "core" | "standard" | "platinum";
 
+export function getLocalMawioTier(): "standard" | "platinum" {
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search);
+    const queryTier = params.get("tier");
+    if (queryTier === "standard" || queryTier === "platinum") {
+      window.localStorage.setItem("mawio-tier", queryTier);
+      return queryTier;
+    }
+    const localTier = window.localStorage.getItem("mawio-tier");
+    if (localTier === "standard" || localTier === "platinum") return localTier;
+  }
+  return "standard";
+}
+
 export interface LoginUserAccount {
   username: string;
   password?: string;
@@ -86,25 +100,29 @@ function dispatchSessionIdentityUpdated() {
   window.dispatchEvent(new CustomEvent(SESSION_IDENTITY_EVENT));
 }
 
-export function readLocalLoginProfiles(scope: LoginProfileScope = "core") {
+export function readLocalLoginProfiles(scope?: LoginProfileScope) {
   if (typeof window === "undefined") return null;
-  return readJson<LoginProfiles>(getLoginProfilesStorageKey(scope));
+  const activeScope = scope ?? getLocalMawioTier();
+  return readJson<LoginProfiles>(getLoginProfilesStorageKey(activeScope));
 }
 
-export function writeLocalLoginProfiles(profiles: LoginProfiles, scope: LoginProfileScope = "core") {
+export function writeLocalLoginProfiles(profiles: LoginProfiles, scope?: LoginProfileScope) {
   if (typeof window === "undefined") return;
-  writeJson(getLoginProfilesStorageKey(scope), profiles);
-  dispatchLoginProfilesUpdated(scope);
+  const activeScope = scope ?? getLocalMawioTier();
+  writeJson(getLoginProfilesStorageKey(activeScope), profiles);
+  dispatchLoginProfilesUpdated(activeScope);
 }
 
-export function readActiveSessionUsername(fallback = "", scope: LoginProfileScope = "core") {
+export function readActiveSessionUsername(fallback = "", scope?: LoginProfileScope) {
   if (typeof window === "undefined") return fallback;
-  return localStorage.getItem(getActiveSessionUsernameStorageKey(scope)) ?? fallback;
+  const activeScope = scope ?? getLocalMawioTier();
+  return localStorage.getItem(getActiveSessionUsernameStorageKey(activeScope)) ?? fallback;
 }
 
-export function writeActiveSessionUsername(username: string, scope: LoginProfileScope = "core") {
+export function writeActiveSessionUsername(username: string, scope?: LoginProfileScope) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(getActiveSessionUsernameStorageKey(scope), username.trim());
+  const activeScope = scope ?? getLocalMawioTier();
+  localStorage.setItem(getActiveSessionUsernameStorageKey(activeScope), username.trim());
   dispatchSessionIdentityUpdated();
 }
 
@@ -129,18 +147,19 @@ export function subscribeToSessionIdentity(onChange: () => void) {
   };
 }
 
-export async function hydrateLoginProfilesFromServer(scope: LoginProfileScope = "core") {
+export async function hydrateLoginProfilesFromServer(scope?: LoginProfileScope) {
   if (typeof window === "undefined") return null;
+  const activeScope = scope ?? getLocalMawioTier();
 
   try {
     const params = new URLSearchParams();
-    if (scope !== "core") {
-      params.set("scope", scope);
+    if (activeScope !== "core") {
+      params.set("scope", activeScope);
     }
     const response = await fetch(`/api/login-profiles${params.toString() ? `?${params.toString()}` : ""}`, { cache: "no-store" });
     if (!response.ok) return null;
     const profiles = (await response.json()) as LoginProfiles;
-    writeLocalLoginProfiles(profiles ?? {}, scope);
+    writeLocalLoginProfiles(profiles ?? {}, activeScope);
     return profiles ?? {};
   } catch {
     return null;
@@ -156,7 +175,7 @@ export async function saveLoginProfileToServer(
 ) {
   if (typeof window === "undefined") return false;
 
-  const scope: LoginProfileScope = scopedEntry ? (scopeOrRole as LoginProfileScope) : "core";
+  const scope: LoginProfileScope = scopedEntry ? (scopeOrRole as LoginProfileScope) : getLocalMawioTier();
   const role = scopedEntry ? (roleOrEntry as Role) : (scopeOrRole as Role);
   const entry = scopedEntry ?? (roleOrEntry as LoginProfileEntry);
 

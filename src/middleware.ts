@@ -8,6 +8,16 @@ const DIRECT_ROLE_ROUTES: Record<string, string> = {
   "/rb": "/RB",
   "/kp": "/KP",
   "/bp": "/BP",
+  "/smanager": "/SMANAGER",
+  "/pmanager": "/PMANAGER",
+  "/sbar": "/SBAR",
+  "/srb": "/SRB",
+  "/skit": "/SKIT",
+  "/sim": "/SIM",
+  "/pbar": "/PBAR",
+  "/prb": "/PRB",
+  "/pkit": "/PKIT",
+  "/pim": "/PIM",
 };
 
 export function middleware(request: NextRequest) {

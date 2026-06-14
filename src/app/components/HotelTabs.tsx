@@ -53,6 +53,7 @@ export default function HotelTabs() {
     { name: "Reception Booking", url: "/SRB" },
     { name: "Standard Kitchen", url: "/SKIT" },
     { name: "Standard Inventory Manager", url: "/SIM" },
+    { name: "Manager", url: "/smanager" },
   ];
 
   const premiumLinks = [
@@ -60,6 +61,7 @@ export default function HotelTabs() {
     { name: "Premium Reception Booking", url: "/PRB" },
     { name: "Premium Kitchen POS", url: "/PKIT" },
     { name: "Premium Inventory Manager", url: "/PIM" },
+    { name: "Premium Manager", url: "/pmanager" },
   ];
 
   const currentLinks = activeTab === 'standard' ? standardLinks : premiumLinks;
