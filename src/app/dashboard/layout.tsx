@@ -5,6 +5,7 @@ import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
 import { InventoryItem, Role } from "@/app/lib/mock-data";
+import { getLocalMawioTier } from "@/app/lib/login-profiles";
 import { ExpenseRecord, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@/app/lib/kitchen-session-storage";
 import { MainStoreItem, STORAGE_MAIN_STORE_ITEMS, getStoreItemLabel, normalizeBaristaProductTarget, normalizeStockName } from "@/app/lib/inventory-transfer";
@@ -1105,10 +1106,13 @@ export default function DashboardLayout({
     async function initializeDashboard() {
       const savedRole = normalizeRole(localStorage.getItem('orange-hotel-role'));
       const savedShift = localStorage.getItem('orange-hotel-shift');
+      const activeHotelScope = getLocalMawioTier();
+
       if (!savedRole || !VALID_ROLES.includes(savedRole)) {
         localStorage.removeItem('orange-hotel-role');
         localStorage.removeItem('orange-hotel-shift');
         localStorage.removeItem(STORAGE_MANAGER_SESSION_VERSION);
+        localStorage.removeItem('orange-hotel-active-login-scope');
         router.replace('/');
         return;
       }
@@ -1118,12 +1122,14 @@ export default function DashboardLayout({
         localStorage.removeItem("orange-hotel-shift");
         localStorage.removeItem("orange-hotel-username");
         localStorage.removeItem(STORAGE_MANAGER_SESSION_VERSION);
+        localStorage.removeItem('orange-hotel-active-login-scope');
         router.replace("/MANAGER");
         return;
       }
 
       localStorage.setItem("orange-hotel-role", savedRole);
-      setActiveUsername(readActiveSessionUsername(savedRole));
+      localStorage.setItem("orange-hotel-active-login-scope", activeHotelScope);
+      setActiveUsername(readActiveSessionUsername(savedRole, activeHotelScope === "platinum" ? "platinum" : "standard"));
       setRole(savedRole);
       if (savedShift) setShift(savedShift);
 
@@ -1272,6 +1278,13 @@ export default function DashboardLayout({
                 <Clock className="w-3 h-3 mr-1" /> {shift}
               </Badge>
             )}
+            <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
+              typeof window !== 'undefined' && getLocalMawioTier() === "platinum"
+                ? "border-amber-500 text-amber-600 bg-amber-50"
+                : "border-blue-500 text-blue-600 bg-blue-50"
+            )}>
+              {typeof window !== 'undefined' && getLocalMawioTier() === "platinum" ? "Premium Hotel" : "Standard Hotel"}
+            </Badge>
             
             <div className={cn("flex items-center gap-4 text-muted-foreground", isDirector && "hidden md:flex")}>
               <SyncStatusIndicator />

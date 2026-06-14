@@ -1,4 +1,4 @@
-import { PLATINUM_ROOM_PRICE, ROOMS, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
+import { PLATINUM_ROOM_PRICE, ROOMS, Room, STANDARD_ROOM_PRICE, PREMIUM_STANDARD_ROOM_PRICE, PREMIUM_DELUXE_ROOM_PRICE } from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
 import { getLocalMawioTier } from "./login-profiles";
 
@@ -23,7 +23,6 @@ function getDefaultRoomsByType(type: "Standard" | "Platinum"): Room[] {
 export function getDefaultRooms(scope?: "standard" | "platinum"): Room[] {
   const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
   if (activeScope === "platinum") {
-    const { PREMIUM_STANDARD_ROOM_PRICE, PREMIUM_DELUXE_ROOM_PRICE } = require("./mock-data");
     const standardRooms: Room[] = [
       "301", "302", "303", "304", "305", "306", "307", "308", "309", "310"
     ].map((number) => ({

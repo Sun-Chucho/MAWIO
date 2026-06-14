@@ -66,8 +66,9 @@ const ROOM_RATE: Record<RoomType, number> = {
   platinum: PLATINUM_ROOM_PRICE,
 };
 
-function getRoomTypeLabel(roomType: RoomType, hotelScope?: "standard" | "platinum"): string {
-  const scope = hotelScope ?? getLocalMawioTier();
+function getRoomTypeLabel(roomType: RoomType): string {
+  if (typeof window === "undefined") return roomType === "standard" ? "Standard" : "Premium";
+  const scope = getLocalMawioTier();
   if (roomType === "standard") return "Standard";
   return scope === "platinum" ? "Deluxe" : "Premium";
 }
