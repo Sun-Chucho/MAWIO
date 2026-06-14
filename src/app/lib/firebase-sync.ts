@@ -163,6 +163,7 @@ export const FIREBASE_SYNC_KEYS = [
   "orange-hotel-store-movements",
   "orange-hotel-store-usage",
   "orange-hotel-cancelled-tickets",
+  "orange-hotel-barista-waste",
   "orange-hotel-rooms-state",
   "orange-hotel-fnb-beverage-cost",
   "orange-hotel-fnb-recipe-cost",

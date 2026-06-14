@@ -198,57 +198,18 @@ function normalizeBaristaMenuItemsFromInventory(inventory: InventoryItem[]): Bar
 function syncBaristaMenuItemsWithSharedInventory(
   menuItems: BaristaMenuItem[],
   inventory: InventoryItem[],
-  storeItems: MainStoreItem[],
+  _storeItems: MainStoreItem[],
 ) {
-  const normalizedInventoryMenu = normalizeBaristaMenuItemsFromInventory(inventory);
-  const syncedItems = menuItems.length === 0 ? normalizedInventoryMenu : menuItems.map((item) => {
-    const normalizedItemTarget = normalizeBaristaTarget(item.name);
-    const inventoryMatch = inventory.find((entry) => {
-      const entryTargets = [
-        normalizeBaristaTarget(entry.name),
-        normalizeBaristaTarget(getBaristaInventoryLabel(entry)),
-      ];
-      return entryTargets.includes(normalizedItemTarget);
-    });
-    const storeMatch = storeItems.find((entry) => normalizeBaristaTarget(getStoreItemLabel(entry)) === normalizedItemTarget);
-
-    if (!inventoryMatch && !storeMatch) {
-      return item;
-    }
-
-    const nextName = storeMatch
-      ? getTotLimit(storeMatch) > 0
-        ? `${getStoreItemLabel(storeMatch)} (TOTS)`
-        : getStoreItemLabel(storeMatch)
-      : inventoryMatch
-        ? getBaristaInventoryLabel(inventoryMatch)
-        : item.name;
-    const nextPrice =
-      typeof inventoryMatch?.sellingPrice === "number" && inventoryMatch.sellingPrice > 0
-        ? inventoryMatch.sellingPrice
-        : typeof inventoryMatch?.price === "number" && inventoryMatch.price > 0
-          ? inventoryMatch.price
-          : item.price;
-    const nextCategory = inventoryMatch ? normalizeCategory(inventoryMatch.category, nextName) : item.category;
-
-    if (nextName === item.name && nextPrice === item.price && nextCategory === item.category) {
-      return item;
-    }
-
-    return {
-      ...item,
-      name: nextName,
-      price: nextPrice,
-      category: nextCategory,
-    };
-  });
-
-  const existingTargets = new Set(syncedItems.map((item) => normalizeBaristaTarget(item.name)));
-  const missingInventoryMenuItems = normalizedInventoryMenu.filter(
-    (item) => !existingTargets.has(normalizeBaristaTarget(item.name)),
-  );
-
-  return [...syncedItems, ...missingInventoryMenuItems];
+  // The POS menu is authoritative per hotel tier: the seeded drink list plus any
+  // manual edits made in the manager Drinks / Inventory tabs. We deliberately do
+  // NOT merge items in from the shared inventory/store here. That shared data was
+  // historically co-mingled between the standard and premium hotels, so merging
+  // it back would leak one hotel's drinks into the other (the "merging" bug).
+  // Stock levels are resolved separately at render time via getMenuStockStatus.
+  if (menuItems.length === 0) {
+    return normalizeBaristaMenuItemsFromInventory(inventory);
+  }
+  return menuItems;
 }
 
 function normalizeBaristaTarget(name: string) {
@@ -301,7 +262,7 @@ function buildStandardSeedMenuItems(): BaristaMenuItem[] {
 // Bumping this version forces the standard barista menu to be re-seeded from
 // BARISTA_INVENTORY_SEED once per browser, so uploaded drink-list changes show
 // up even when a stale menu was already persisted.
-const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v1";
+const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2";
 
 export default function BaristaPage() {
   const isDirector = useIsDirector();
@@ -868,6 +829,47 @@ export default function BaristaPage() {
     }
     writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
     setStoredMenuItems(next);
+  };
+
+  // Set the available barista stock quantity for a menu item from the manager
+  // Inventory tab. Quantity lives on the barista-lane store item (created on
+  // demand for menu-only items such as the premium seed) so POS stock checks and
+  // sale deductions keep working.
+  const updateBaristaItemStock = (
+    menuItem: { name: string; category: string; buyingPrice?: number; sellingPrice?: number },
+    qty: number,
+  ) => {
+    const allStoreItems = readJson<Array<MainStoreItem & { lane?: "kitchen" | "barista" }>>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    const target = normalizeBaristaTarget(menuItem.name);
+    const index = allStoreItems.findIndex(
+      (entry) => entry.lane === "barista" && normalizeBaristaTarget(getStoreItemLabel(entry)) === target,
+    );
+
+    let nextStoreItems: Array<MainStoreItem & { lane?: "kitchen" | "barista" }>;
+    if (index >= 0) {
+      nextStoreItems = allStoreItems.map((entry, idx) => (idx === index ? { ...entry, stock: qty } : entry));
+    } else {
+      const seedRef = [...BARISTA_INVENTORY_SEED, ...PREMIUM_BARISTA_INVENTORY_SEED].find(
+        (seed) =>
+          normalizeBaristaTarget(getBaristaInventoryLabel({ name: seed.name ?? "", size: seed.size ?? "" })) === target,
+      );
+      const newStoreItem: MainStoreItem & { lane: "barista" } = {
+        id: `bs-${Date.now()}`,
+        name: seedRef?.name ?? menuItem.name,
+        subCategory: seedRef?.category ?? menuItem.category ?? "Bar",
+        size: seedRef?.size ?? "",
+        stock: qty,
+        unit: seedRef?.unit ?? "Bottle",
+        minStock: seedRef?.minStock ?? 0,
+        lane: "barista",
+        buyingPrice: typeof menuItem.buyingPrice === "number" ? menuItem.buyingPrice : seedRef?.buyingPrice ?? 0,
+        sellingPrice: typeof menuItem.sellingPrice === "number" ? menuItem.sellingPrice : seedRef?.sellingPrice ?? 0,
+      };
+      nextStoreItems = [...allStoreItems, newStoreItem];
+    }
+
+    setBaristaStoreItems(nextStoreItems.filter((entry) => entry.lane === "barista"));
+    writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
   };
 
   const recordWaste = async (item: BaristaMenuItem) => {
@@ -1626,7 +1628,7 @@ export default function BaristaPage() {
                 <TableHeader className="bg-muted/10">
                   <TableRow>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Store Qty</TableHead>
+                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Quantity</TableHead>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Buying Price (Cost)</TableHead>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price (POS)</TableHead>
@@ -1636,7 +1638,28 @@ export default function BaristaPage() {
                   {baristaManagerPricingRows.map((item) => (
                     <TableRow key={item.id}>
                       <TableCell className="font-bold">{item.name}</TableCell>
-                      <TableCell className="font-bold">{item.stock} {item.unit}</TableCell>
+                      <TableCell className="font-bold">
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            min="0"
+                            defaultValue={item.stock}
+                            className="h-9 w-20"
+                            onBlur={(event) => {
+                              const value = parseInt(event.target.value, 10);
+                              if (!Number.isFinite(value) || value < 0) return;
+                              if (value === item.stock) return;
+                              updateBaristaItemStock(
+                                { name: item.name, category: item.category, buyingPrice: item.buyingPrice, sellingPrice: item.sellingPrice },
+                                value,
+                              );
+                            }}
+                          />
+                          {item.unit ? (
+                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{item.unit}</span>
+                          ) : null}
+                        </div>
+                      </TableCell>
                       <TableCell className="font-bold">{item.quantitySold}</TableCell>
                       <TableCell className="font-bold">
                         <div className="flex items-center gap-1">
