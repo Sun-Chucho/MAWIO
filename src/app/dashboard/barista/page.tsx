@@ -32,7 +32,7 @@ import { SyncStatusIndicator } from "@/components/sync-status-indicator";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase, purgeSyncedKeysForCurrentTier, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -237,7 +237,10 @@ function buildPremiumSeedMenuItems(): BaristaMenuItem[] {
     .map((item, idx) => ({
       id: `premium-seed-${idx}`,
       name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
+      // Premium seed prices are the supplier cost. They become the buying price;
+      // the manager sets the actual POS selling price in the manager Inventory tab.
       price: item.sellingPrice ?? 0,
+      buyingPrice: item.buyingPrice ?? 0,
       category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
       prepMinutes: 2,
       barcode: item.barcode ?? "",
@@ -251,8 +254,10 @@ function buildStandardSeedMenuItems(): BaristaMenuItem[] {
       id: `standard-seed-${idx}`,
       name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
       // Customer-facing POS price is always the selling price; buying price is
-      // reserved for manager costing only.
+      // reserved for manager costing only (synced from premium where the same
+      // product shares a supplier).
       price: item.sellingPrice ?? 0,
+      buyingPrice: item.buyingPrice ?? 0,
       category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
       prepMinutes: 2,
       barcode: item.barcode ?? "",
@@ -263,6 +268,11 @@ function buildStandardSeedMenuItems(): BaristaMenuItem[] {
 // BARISTA_INVENTORY_SEED once per browser, so uploaded drink-list changes show
 // up even when a stale menu was already persisted.
 const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2";
+
+// One-time, per-tier barista clean-slate marker. The suffix `-{scope}` is added
+// at runtime so the standard and premium hotels each purge their own historically
+// co-mingled barista data exactly once. Bump the version to force another purge.
+const BARISTA_TIER_RESET_KEY = "orange-hotel-barista-tier-reset-v1";
 
 export default function BaristaPage() {
   const isDirector = useIsDirector();
@@ -390,11 +400,33 @@ export default function BaristaPage() {
       setPosHydrated(true);
     };
 
-    void Promise.all([
-      hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
-      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS).catch(() => undefined),
-      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS).catch(() => undefined),
-    ]).finally(applyBaristaSnapshot);
+    const bootstrapBarista = async () => {
+      // One-time, per-hotel clean slate: abandon the barista data that was
+      // historically co-mingled between the two hotels during the original
+      // shared-database bug. Each tier purges only its own data (local + its own
+      // Firebase node) exactly once, then reseeds below. This is what makes each
+      // dashboard truly own its sales/menu with no cross-hotel conflict.
+      const resetMarker = `${BARISTA_TIER_RESET_KEY}-${scope}`;
+      if (typeof window !== "undefined" && !window.localStorage.getItem(resetMarker)) {
+        await purgeSyncedKeysForCurrentTier([
+          activeBaristaKey,
+          STORAGE_TICKETS,
+          STORAGE_SEQ,
+          STORAGE_PAYMENTS,
+          STORAGE_MENU,
+          STORAGE_WASTE,
+        ]).catch(() => undefined);
+        window.localStorage.setItem(resetMarker, "1");
+      }
+
+      await Promise.all([
+        hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
+        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS).catch(() => undefined),
+        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS).catch(() => undefined),
+      ]);
+    };
+
+    void bootstrapBarista().finally(applyBaristaSnapshot);
     const unsubscribeBarista = subscribeToSyncedStorageKey(activeBaristaKey, applyBaristaSnapshot);
     const unsubscribeInventory = subscribeToSyncedStorageKey(STORAGE_INVENTORY_ITEMS, applyBaristaSnapshot);
 

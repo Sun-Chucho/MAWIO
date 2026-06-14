@@ -1126,6 +1126,34 @@ export function clearLocalBusinessState() {
   });
 }
 
+// Awaitable purge of the given keys for the CURRENT hotel tier only (local cache
+// + this tier's Firebase/server node). Used to give a single hotel a clean slate
+// — e.g. abandoning barista data that was historically co-mingled between the
+// standard and premium hotels — without touching the other tier. Resolves only
+// after the backend delete completes so a follow-up reseed is not clobbered by a
+// late delete.
+export async function purgeSyncedKeysForCurrentTier(keys: string[]) {
+  if (typeof window === "undefined") return;
+
+  keys.forEach((key) => {
+    removeLocalCache(key);
+    dispatchStorageUpdated(key);
+  });
+
+  try {
+    await ensureFirebaseAuthReady();
+    await Promise.all(
+      keys.map((key) => remove(ref(firebaseDatabase, toStoragePath(key))).catch(() => null)),
+    );
+  } catch {
+    await Promise.all(keys.map((key) => removeServerSyncedStorageValue(key).catch(() => null)));
+  }
+
+  // Best-effort: also clear the REST mirror so a stale server snapshot can't be
+  // re-hydrated after the Firebase node is emptied.
+  await Promise.all(keys.map((key) => removeServerSyncedStorageValue(key).catch(() => null)));
+}
+
 export async function clearFirebaseBusinessState() {
   try {
     await ensureFirebaseAuthReady();
