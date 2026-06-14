@@ -1,9 +1,15 @@
 import { removeStorageValueFromFirebase, syncStorageValueToFirebase } from "@/app/lib/firebase-sync";
 import { sanitizeForStorage } from "@/app/lib/storage-sanitize";
+import { getLocalMawioTier } from "./login-profiles";
 
 export const STORAGE_CASHIER_STATE = "orange-hotel-cashier-state";
 export const STORAGE_KITCHEN_STATE = "orange-hotel-kitchen-state";
 export const STORAGE_BARISTA_STATE = "orange-hotel-barista-state";
+
+export function getScopedStorageKey(baseKey: string, scope?: "standard" | "platinum"): string {
+  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
+  return activeScope === "platinum" ? `${baseKey}-platinum` : baseKey;
+}
 
 interface CashierState<TTransaction> {
   transactions: TTransaction[];

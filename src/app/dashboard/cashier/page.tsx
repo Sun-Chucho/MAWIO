@@ -22,6 +22,8 @@ import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { isBookingStillActive, readRoomsState, syncRoomsStateFromBookings, updateRoomStatusByNumber } from "@/app/lib/rooms-storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { getScopedStorageKey } from "@/app/lib/storage";
+import { getLocalMawioTier } from "@/app/lib/login-profiles";
 
 type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
 type TransactionTab = "completed" | "credit";
@@ -256,7 +258,7 @@ export default function BookingPage() {
   const [extendCheckOutTime, setExtendCheckOutTime] = useState("12:00");
   const [showExtendPaymentPopup, setShowExtendPaymentPopup] = useState(false);
 
-  const [rooms, setRooms] = useState<Room[]>(ROOMS.map((room) => ({ ...room })));
+  const [rooms, setRooms] = useState<Room[]>(readRoomsState());
   const [transactions, setTransactions] = useState<BookingRecord[]>([]);
   const [receiptSeq, setReceiptSeq] = useState(84920);
   const [role, setRole] = useState<Role>("cashier");
@@ -289,7 +291,8 @@ export default function BookingPage() {
     const unsubscribeCashier = subscribeToSyncedStorageKey(STORAGE_CASHIER_STATE, () => {
       applyCashierSnapshot();
     });
-    const unsubscribeRooms = subscribeToSyncedStorageKey<Room[]>("orange-hotel-rooms-state", (value) => {
+    const roomsStorageKey = getScopedStorageKey("orange-hotel-rooms-state");
+    const unsubscribeRooms = subscribeToSyncedStorageKey<Room[]>(roomsStorageKey, (value) => {
       applyCashierSnapshot(Array.isArray(value) && value.length > 0 ? value : readRoomsState());
     });
 

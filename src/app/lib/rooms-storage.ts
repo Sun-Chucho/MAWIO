@@ -1,5 +1,6 @@
 import { PLATINUM_ROOM_PRICE, ROOMS, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
+import { getLocalMawioTier } from "./login-profiles";
 
 interface ActiveBookingRoom {
   roomNumber: string;
@@ -10,8 +11,18 @@ interface ActiveBookingRoom {
 
 export const STORAGE_ROOMS = "orange-hotel-rooms-state";
 
-export function getDefaultRooms(): Room[] {
-  return ROOMS.map((room) => ({ ...room }));
+function getRoomStorageKey(scope?: "standard" | "platinum"): string {
+  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
+  return activeScope === "platinum" ? "orange-hotel-rooms-state-platinum" : STORAGE_ROOMS;
+}
+
+function getDefaultRoomsByType(type: "Standard" | "Platinum"): Room[] {
+  return ROOMS.filter(room => room.type === type).map((room) => ({ ...room }));
+}
+
+export function getDefaultRooms(scope?: "standard" | "platinum"): Room[] {
+  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
+  return activeScope === "platinum" ? getDefaultRoomsByType("Platinum") : getDefaultRoomsByType("Standard");
 }
 
 function getRoomRateByType(type: Room["type"]) {
@@ -25,32 +36,35 @@ function normalizeRoomRates(rooms: Room[]): Room[] {
   });
 }
 
-export function readRoomsState(): Room[] {
-  const saved = readJson<Room[]>(STORAGE_ROOMS);
+export function readRoomsState(scope?: "standard" | "platinum"): Room[] {
+  const key = getRoomStorageKey(scope);
+  const saved = readJson<Room[]>(key);
   if (!Array.isArray(saved) || saved.length === 0) {
-    return getDefaultRooms();
+    return getDefaultRooms(scope);
   }
   return normalizeRoomRates(saved);
 }
 
-function hasSavedRoomsState(): boolean {
-  const saved = readJson<Room[]>(STORAGE_ROOMS);
+function hasSavedRoomsState(scope?: "standard" | "platinum"): boolean {
+  const key = getRoomStorageKey(scope);
+  const saved = readJson<Room[]>(key);
   return Array.isArray(saved) && saved.length > 0;
 }
 
-export function writeRoomsState(rooms: Room[]) {
+export function writeRoomsState(rooms: Room[], scope?: "standard" | "platinum") {
   const normalizedRooms = normalizeRoomRates(rooms);
-  const saved = readJson<Room[]>(STORAGE_ROOMS);
+  const key = getRoomStorageKey(scope);
+  const saved = readJson<Room[]>(key);
   if (Array.isArray(saved) && JSON.stringify(saved) === JSON.stringify(normalizedRooms)) return;
-  writeJson(STORAGE_ROOMS, normalizedRooms);
+  writeJson(key, normalizedRooms);
 }
 
-function readBaseRooms(baseRooms?: Room[]) {
+function readBaseRooms(baseRooms?: Room[], scope?: "standard" | "platinum") {
   return Array.isArray(baseRooms) && baseRooms.length > 0
     ? baseRooms
-    : hasSavedRoomsState()
-      ? readRoomsState()
-      : getDefaultRooms();
+    : hasSavedRoomsState(scope)
+      ? readRoomsState(scope)
+      : getDefaultRooms(scope);
 }
 
 export function getActiveBookedRoomNumbers(bookings: ActiveBookingRoom[]) {
@@ -75,19 +89,19 @@ function reconcileRooms(rooms: Room[], occupiedRooms: Set<string>): Room[] {
   });
 }
 
-export function updateRoomStatusByNumber(roomNumber: string, status: Room["status"], baseRooms?: Room[]): Room[] {
-  const nextRooms = readBaseRooms(baseRooms).map((room) =>
+export function updateRoomStatusByNumber(roomNumber: string, status: Room["status"], baseRooms?: Room[], scope?: "standard" | "platinum"): Room[] {
+  const nextRooms = readBaseRooms(baseRooms, scope).map((room) =>
     room.number === roomNumber ? { ...room, status } : room,
   );
-  writeRoomsState(nextRooms);
+  writeRoomsState(nextRooms, scope);
   return nextRooms;
 }
 
-export function updateRoomStatusById(roomId: string, status: Room["status"], baseRooms?: Room[]): Room[] {
-  const nextRooms = readBaseRooms(baseRooms).map((room) =>
+export function updateRoomStatusById(roomId: string, status: Room["status"], baseRooms?: Room[], scope?: "standard" | "platinum"): Room[] {
+  const nextRooms = readBaseRooms(baseRooms, scope).map((room) =>
     room.id === roomId ? { ...room, status } : room,
   );
-  writeRoomsState(nextRooms);
+  writeRoomsState(nextRooms, scope);
   return nextRooms;
 }
 
@@ -95,20 +109,20 @@ export function isBookingStillActive(booking: ActiveBookingRoom) {
   return booking.status !== "checked-out";
 }
 
-export function deriveRoomsStateFromBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[]): Room[] {
+export function deriveRoomsStateFromBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[], scope?: "standard" | "platinum"): Room[] {
   const occupiedRooms = getActiveBookedRoomNumbers(bookings);
-  const currentRooms = readBaseRooms(baseRooms);
+  const currentRooms = readBaseRooms(baseRooms, scope);
   return reconcileRooms(currentRooms, occupiedRooms);
 }
 
-export function syncRoomsStateFromBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[]) {
-  const nextRooms = deriveRoomsStateFromBookings(bookings, baseRooms);
-  writeRoomsState(nextRooms);
+export function syncRoomsStateFromBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[], scope?: "standard" | "platinum") {
+  const nextRooms = deriveRoomsStateFromBookings(bookings, baseRooms, scope);
+  writeRoomsState(nextRooms, scope);
   return nextRooms;
 }
 
-export function syncRoomsWithActiveBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[]) {
-  const nextRooms = deriveRoomsStateFromBookings(bookings, baseRooms);
-  writeRoomsState(nextRooms);
+export function syncRoomsWithActiveBookings(bookings: ActiveBookingRoom[], baseRooms?: Room[], scope?: "standard" | "platinum") {
+  const nextRooms = deriveRoomsStateFromBookings(bookings, baseRooms, scope);
+  writeRoomsState(nextRooms, scope);
   return nextRooms;
 }

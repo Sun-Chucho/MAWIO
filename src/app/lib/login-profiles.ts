@@ -13,11 +13,16 @@ export function getLocalMawioTier(): "standard" | "platinum" {
     const params = new URLSearchParams(window.location.search);
     const queryTier = params.get("tier");
     if (queryTier === "standard" || queryTier === "platinum") {
-      window.localStorage.setItem("mawio-tier", queryTier);
+      window.localStorage.setItem("orange-hotel-active-login-scope", queryTier);
       return queryTier;
     }
+    const activeScope = window.localStorage.getItem("orange-hotel-active-login-scope");
+    if (activeScope === "standard" || activeScope === "platinum") return activeScope;
     const localTier = window.localStorage.getItem("mawio-tier");
-    if (localTier === "standard" || localTier === "platinum") return localTier;
+    if (localTier === "standard" || localTier === "platinum") {
+      window.localStorage.setItem("orange-hotel-active-login-scope", localTier);
+      return localTier;
+    }
   }
   return "standard";
 }
