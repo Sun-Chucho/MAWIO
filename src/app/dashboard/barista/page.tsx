@@ -19,7 +19,7 @@ import {
 import { findStoreItemForMenuName, formatTotStatus, getMenuStockStatus, getRemainingTots, getTotLimit, isTotTrackedMenuItem, normalizeBaristaMenuItems } from "@/app/lib/barista-stock";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
 import { getActiveBaristaStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
-import { PREMIUM_BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
+import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { getLocalMawioTier } from "@/app/lib/login-profiles";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +49,15 @@ interface BaristaMenuItem {
   category: Exclude<BaristaCategory, "all">;
   prepMinutes: number;
   barcode?: string;
+  // Supplier cost, used only for manager costing — never shown in POS.
+  buyingPrice?: number;
+}
+
+interface BaristaWasteLog {
+  id: string;
+  name: string;
+  qty: number;
+  createdAt: number;
 }
 
 interface CartLine {
@@ -100,6 +109,7 @@ const STORAGE_SEQ = "orange-hotel-barista-seq";
 const STORAGE_MENU = "orange-hotel-barista-menu";
 const STORAGE_PAYMENTS = "orange-hotel-barista-payments";
 const STORAGE_CANCELLED = "orange-hotel-cancelled-tickets";
+const STORAGE_WASTE = "orange-hotel-barista-waste";
 
 function matchesSalesDateFilter(createdAt: number | undefined, filter: SalesDateFilter) {
   if (filter === "all") return true;
@@ -273,6 +283,26 @@ function buildPremiumSeedMenuItems(): BaristaMenuItem[] {
     }));
 }
 
+function buildStandardSeedMenuItems(): BaristaMenuItem[] {
+  return BARISTA_INVENTORY_SEED
+    .filter((item) => item.name && item.status === "ACTIVE")
+    .map((item, idx) => ({
+      id: `standard-seed-${idx}`,
+      name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
+      // Customer-facing POS price is always the selling price; buying price is
+      // reserved for manager costing only.
+      price: item.sellingPrice ?? 0,
+      category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
+      prepMinutes: 2,
+      barcode: item.barcode ?? "",
+    }));
+}
+
+// Bumping this version forces the standard barista menu to be re-seeded from
+// BARISTA_INVENTORY_SEED once per browser, so uploaded drink-list changes show
+// up even when a stale menu was already persisted.
+const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v1";
+
 export default function BaristaPage() {
   const isDirector = useIsDirector();
   const { confirm, dialog } = useConfirmDialog();
@@ -376,9 +406,23 @@ export default function BaristaPage() {
       setInventoryItems(inventory);
 
       let menuItems = snapshot.menuItems;
-      if (menuItems.length === 0 && scope === "platinum") {
-        menuItems = buildPremiumSeedMenuItems();
-        writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+      if (scope === "platinum") {
+        if (menuItems.length === 0) {
+          menuItems = buildPremiumSeedMenuItems();
+          writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+        }
+      } else {
+        // Standard hotel: seed when empty, and force a one-time re-seed so an
+        // updated uploaded drink list replaces a previously persisted menu.
+        const needsForcedSeed =
+          typeof window !== "undefined" && !window.localStorage.getItem(STANDARD_BARISTA_SEED_VERSION_KEY);
+        if (menuItems.length === 0 || needsForcedSeed) {
+          menuItems = buildStandardSeedMenuItems();
+          writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+        }
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(STANDARD_BARISTA_SEED_VERSION_KEY, "1");
+        }
       }
 
       setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
@@ -699,12 +743,28 @@ export default function BaristaPage() {
     return priceMap;
   }, [menuItems]);
 
+  const baristaMenuBuyingPriceByItem = useMemo(() => {
+    const priceMap = new Map<string, number>();
+
+    menuItems.forEach((item) => {
+      const key = normalizeBaristaTarget(item.name);
+      if (typeof item.buyingPrice === "number" && item.buyingPrice > 0) {
+        priceMap.set(key, item.buyingPrice);
+      }
+    });
+
+    return priceMap;
+  }, [menuItems]);
+
   const baristaInventoryRows = useMemo(
     () =>
       baristaStoreItems.map((item) => {
         const inventoryMatch = resolveBaristaInventoryItem(item);
+        const menuBuyingPrice = baristaMenuBuyingPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item)));
         const buyingPrice =
-          typeof item.buyingPrice === "number" && item.buyingPrice > 0
+          typeof menuBuyingPrice === "number" && menuBuyingPrice > 0
+            ? menuBuyingPrice
+            : typeof item.buyingPrice === "number" && item.buyingPrice > 0
             ? item.buyingPrice
             : typeof inventoryMatch?.buyingPrice === "number" && inventoryMatch.buyingPrice > 0
               ? inventoryMatch.buyingPrice
@@ -739,8 +799,102 @@ export default function BaristaPage() {
           profitLoss,
         };
       }),
-    [baristaMenuPriceByItem, baristaSalesByItem, baristaStoreItems, inventoryItems],
+    [baristaMenuBuyingPriceByItem, baristaMenuPriceByItem, baristaSalesByItem, baristaStoreItems, inventoryItems],
   );
+
+  // Editable per-item pricing rows for the manager Inventory tab. Driven by the
+  // POS menu so every drink (including premium menu-only items with no store
+  // stock) gets a Buying Price and Selling Price the manager can set manually.
+  const baristaManagerPricingRows = useMemo(
+    () =>
+      menuItems.map((menuItem) => {
+        const target = normalizeBaristaTarget(menuItem.name);
+        const storeMatch = baristaStoreItems.find(
+          (entry) => normalizeBaristaTarget(getStoreItemLabel(entry)) === target,
+        );
+        const inventoryMatch = inventoryItems.find((entry) => {
+          const entryNames = [
+            entry.name,
+            entry.size ? `${entry.name} ${entry.size}` : entry.name,
+          ].map((value) => normalizeBaristaTarget(value));
+          return entryNames.includes(target);
+        });
+        const buyingPrice =
+          typeof menuItem.buyingPrice === "number" && menuItem.buyingPrice > 0
+            ? menuItem.buyingPrice
+            : typeof storeMatch?.buyingPrice === "number" && storeMatch.buyingPrice > 0
+            ? storeMatch.buyingPrice
+            : typeof inventoryMatch?.buyingPrice === "number" && inventoryMatch.buyingPrice > 0
+            ? inventoryMatch.buyingPrice
+            : 0;
+        const sellingPrice = typeof menuItem.price === "number" && menuItem.price > 0 ? menuItem.price : 0;
+        const stock = typeof storeMatch?.stock === "number" ? storeMatch.stock : 0;
+        const unit = storeMatch?.unit ?? "";
+        const quantitySold = baristaSalesByItem.get(target) ?? 0;
+        return {
+          id: menuItem.id,
+          name: menuItem.name,
+          category: menuItem.category,
+          buyingPrice,
+          sellingPrice,
+          stock,
+          unit,
+          quantitySold,
+        };
+      }),
+    [baristaSalesByItem, baristaStoreItems, inventoryItems, menuItems],
+  );
+
+  // Persist a manual buying/selling price change from the manager Inventory tab
+  // onto the POS menu item (matched by name). Selling price drives the POS;
+  // buying price is kept for costing only.
+  const updateBaristaItemPricing = (menuName: string, patch: { price?: number; buyingPrice?: number }) => {
+    const activeBaristaKey = getActiveBaristaStateKey();
+    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+    );
+    const target = normalizeBaristaTarget(menuName);
+    let matched = false;
+    const next = snapshot.menuItems.map((item) => {
+      if (normalizeBaristaTarget(item.name) === target) {
+        matched = true;
+        return { ...item, ...patch };
+      }
+      return item;
+    });
+    if (!matched) {
+      const menuRef = menuItems.find((entry) => normalizeBaristaTarget(entry.name) === target);
+      if (menuRef) next.push({ ...menuRef, ...patch });
+    }
+    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
+    setStoredMenuItems(next);
+  };
+
+  const recordWaste = async (item: BaristaMenuItem) => {
+    if (isDirector) return;
+    const approved = await confirm({
+      title: "Record Waste",
+      description: `Record 1 x ${item.name} as waste? This removes it from barista stock.`,
+      actionLabel: "Record Waste",
+    });
+    if (!approved) return;
+
+    const stockResult = updateBaristaStoreStock([{ name: item.name, qty: 1 }], "consume");
+    if (!stockResult.ok) {
+      window.alert(stockResult.error);
+      return;
+    }
+
+    const wasteLog: BaristaWasteLog = {
+      id: `bw-${Date.now()}`,
+      name: item.name,
+      qty: 1,
+      createdAt: Date.now(),
+    };
+    const existing = readJson<BaristaWasteLog[]>(STORAGE_WASTE) ?? [];
+    writeJson(STORAGE_WASTE, [wasteLog, ...existing]);
+    window.alert(`Recorded waste: 1 x ${item.name}`);
+  };
 
   const baristaCapitalTotal = useMemo(
     () => baristaInventoryRows.reduce((sum, item) => sum + item.capital, 0),
@@ -1462,8 +1616,10 @@ export default function BaristaPage() {
         {managerTab === "drinks" ? renderDrinksManager() : managerTab === "finance" ? renderFinanceTable() : managerTab === "sales" ? renderDirectorSalesTable() : (
           <Card className="border-none shadow-sm">
             <CardHeader>
-              <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory from Store</CardTitle>
-              <CardDescription>Store additions update here immediately. Menu creation now lives in Menu Create.</CardDescription>
+              <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory & Pricing</CardTitle>
+              <CardDescription>
+                Buying price is the supplier cost (used only for costing). Selling price is what the POS charges. Edit either field and click away to save.
+              </CardDescription>
             </CardHeader>
             <CardContent className="p-0">
               <Table>
@@ -1472,38 +1628,58 @@ export default function BaristaPage() {
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Store Qty</TableHead>
                     <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Revenue</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Profit/Loss</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Tot Status</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Low Threshold</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Status</TableHead>
+                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Buying Price (Cost)</TableHead>
+                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price (POS)</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {baristaInventoryRows.map((item) => (
+                  {baristaManagerPricingRows.map((item) => (
                     <TableRow key={item.id}>
-                      <TableCell className="font-bold">{item.displayName}</TableCell>
+                      <TableCell className="font-bold">{item.name}</TableCell>
                       <TableCell className="font-bold">{item.stock} {item.unit}</TableCell>
                       <TableCell className="font-bold">{item.quantitySold}</TableCell>
                       <TableCell className="font-bold">
-                        {item.sellingPrice > 0 ? `TSh ${item.sellingPrice.toLocaleString()}` : "-"}
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            defaultValue={item.buyingPrice > 0 ? item.buyingPrice : ""}
+                            placeholder="0"
+                            className="h-9 w-28"
+                            onBlur={(event) => {
+                              const value = parseFloat(event.target.value);
+                              if (!Number.isFinite(value) || value < 0) return;
+                              if (value === item.buyingPrice) return;
+                              updateBaristaItemPricing(item.name, { buyingPrice: value });
+                            }}
+                          />
+                        </div>
                       </TableCell>
-                      <TableCell className="font-bold">TSh {item.revenue.toLocaleString()}</TableCell>
-                      <TableCell className={`font-bold ${item.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        TSh {item.profitLoss.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="font-bold">{formatTotStatus(item)}</TableCell>
-                      <TableCell className="font-bold">{item.minStock}</TableCell>
-                      <TableCell className="font-black uppercase text-[10px] tracking-widest">
-                        {item.stock <= 0 ? "Out" : item.stock < item.minStock ? "Low" : "In Stock"}
+                      <TableCell className="font-bold">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            defaultValue={item.sellingPrice > 0 ? item.sellingPrice : ""}
+                            placeholder="0"
+                            className="h-9 w-28"
+                            onBlur={(event) => {
+                              const value = parseFloat(event.target.value);
+                              if (!Number.isFinite(value) || value < 0) return;
+                              if (value === item.sellingPrice) return;
+                              updateBaristaItemPricing(item.name, { price: value });
+                            }}
+                          />
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
-                  {baristaStoreItems.length === 0 && (
+                  {baristaManagerPricingRows.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={9} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
-                        No barista store stock
+                      <TableCell colSpan={5} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                        No barista menu items yet
                       </TableCell>
                     </TableRow>
                   )}
@@ -1855,14 +2031,9 @@ export default function BaristaPage() {
                 {filteredMenu.map((item) => {
                   const stockStatus = getMenuStockStatus(baristaStoreItems, item.name);
                   return (
-                  <button
+                  <div
                     key={item.id}
-                    onClick={() => {
-                      if (!stockStatus.available) return;
-                      addToCart(item);
-                    }}
-                    disabled={!stockStatus.available}
-                    className="text-left bg-white border rounded-2xl p-5 hover:border-primary/50 hover:shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    className={`flex flex-col text-left bg-white border rounded-2xl p-5 transition-all hover:border-primary/50 hover:shadow-md ${!stockStatus.available ? "opacity-50" : ""}`}
                   >
                     <div className="flex items-center justify-between mb-3">
                       <Badge variant="outline" className="uppercase text-[9px] font-black tracking-widest">
@@ -1874,13 +2045,27 @@ export default function BaristaPage() {
                         </span>
                       </div>
                       <h3 className="font-black text-lg leading-tight">{item.name}</h3>
-                      <div className="mt-6 flex items-center justify-between">
-                      <span className="font-black">TSh {(item.price || 0).toLocaleString()}</span>
-                        <div className="w-9 h-9 rounded-xl bg-primary text-white flex items-center justify-center">
-                          <Plus className="w-4 h-4" />
-                        </div>
+                      <span className="mt-4 font-black">TSh {(item.price || 0).toLocaleString()}</span>
+                      <div className="mt-4 flex items-center gap-2">
+                        <Button
+                          type="button"
+                          onClick={() => addToCart(item)}
+                          disabled={!stockStatus.available || isDirector}
+                          className="h-9 flex-1 gap-1 font-black uppercase text-[10px] tracking-widest"
+                        >
+                          <Plus className="w-4 h-4" /> Add
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void recordWaste(item)}
+                          disabled={isDirector}
+                          className="h-9 gap-1 font-black uppercase text-[10px] tracking-widest text-red-600 hover:text-red-700 hover:border-red-300"
+                        >
+                          <Trash2 className="w-4 h-4" /> Waste
+                        </Button>
                       </div>
-                  </button>
+                  </div>
                 )})}
 
                 {filteredMenu.length === 0 && (
