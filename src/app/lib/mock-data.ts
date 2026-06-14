@@ -24,16 +24,16 @@ export interface Room {
 }
 
 export const STANDARD_ROOM_PRICE = 20000;
-export const PLATINUM_ROOM_PRICE = 100000;
+export const PLATINUM_ROOM_PRICE = 30000;
 
 const STANDARD_ROOM_NUMBERS = [
-  "101", "102", "103", "104", "105", "106", "107", "108", "109", "110", "111"
+  "101", "102", "103", "104", "105", "106", "107", "108", "110", "111", "113", "133"
 ] as const;
 
 const PLATINUM_ROOM_NUMBERS = [
-  "201", "202", "203", "204", "205", "206", "207", "208", "209", "210",
-  "211", "212", "213", "214", "215", "216", "217", "218", "219", "220",
-  "221", "222"
+  "109", "110", "112", "114", "115", "116", "117", "118", "119", "120",
+  "121", "122", "123", "124", "125", "126", "127", "128", "129", "130",
+  "131", "132"
 ] as const;
 
 const standardRooms: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({

@@ -11,8 +11,8 @@ import { createNgeniusPayPageOrder } from "@/app/lib/ngenius";
 export const runtime = "nodejs";
 
 const ROOM_PRICES = {
-  standard: 70000,
-  platinum: 100000,
+  standard: 20000,
+  platinum: 30000,
 } as const;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;

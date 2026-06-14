@@ -28,7 +28,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SyncStatusIndicator } from "@/components/sync-status-indicator";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
-import { CheckCircle2, Coffee, Lock, Minus, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
+import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
@@ -263,7 +263,12 @@ export default function BaristaPage() {
   const { confirm, dialog } = useConfirmDialog();
   const [role, setRole] = useState<Role | null>(null);
   const isManager = role === "manager";
-  const [managerTab, setManagerTab] = useState<"inventory" | "finance" | "sales">("finance");
+  const [managerTab, setManagerTab] = useState<"inventory" | "finance" | "sales" | "drinks">("finance");
+  const [drinkEditId, setDrinkEditId] = useState<string | null>(null);
+  const [drinkName, setDrinkName] = useState("");
+  const [drinkPrice, setDrinkPrice] = useState("");
+  const [drinkCategory, setDrinkCategory] = useState<Exclude<BaristaCategory, "all">>("coffee");
+  const [drinkPrepMinutes, setDrinkPrepMinutes] = useState("5");
   const [directorTab, setDirectorTab] = useState<"inventory" | "finance" | "purchases" | "sales">("finance");
   const [directorSalesDateFilter, setDirectorSalesDateFilter] = useState<SalesDateFilter>("day");
   const [category, setCategory] = useState<BaristaCategory>("all");
@@ -1198,6 +1203,186 @@ export default function BaristaPage() {
     writePosState(STORAGE_BARISTA_STATE, nextTickets, ticketSeq, baristaPayments, storedMenuItems);
   };
 
+  const saveDrink = () => {
+    const name = drinkName.trim();
+    const price = parseFloat(drinkPrice);
+    if (!name || isNaN(price) || price < 0) return;
+    const prep = Math.max(0, parseInt(drinkPrepMinutes, 10) || 5);
+
+    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      STORAGE_BARISTA_STATE, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+    );
+    let next: BaristaMenuItem[];
+    if (drinkEditId) {
+      next = snapshot.menuItems.map((item) =>
+        item.id === drinkEditId ? { ...item, name, price, category: drinkCategory, prepMinutes: prep } : item,
+      );
+    } else {
+      const newDrink: BaristaMenuItem = {
+        id: `d-${Date.now()}`,
+        name,
+        price,
+        category: drinkCategory,
+        prepMinutes: prep,
+      };
+      next = [...snapshot.menuItems, newDrink];
+    }
+    writePosState(STORAGE_BARISTA_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
+    setStoredMenuItems(next);
+    setDrinkEditId(null);
+    setDrinkName("");
+    setDrinkPrice("");
+    setDrinkPrepMinutes("5");
+    setDrinkCategory("coffee");
+  };
+
+  const startEditDrink = (item: BaristaMenuItem) => {
+    setDrinkEditId(item.id);
+    setDrinkName(item.name);
+    setDrinkPrice(String(item.price));
+    setDrinkCategory(item.category);
+    setDrinkPrepMinutes(String(item.prepMinutes));
+  };
+
+  const deleteDrink = async (id: string) => {
+    const approved = await confirm({
+      title: "Delete Drink",
+      description: "Are you sure you want to remove this drink from the menu?",
+      actionLabel: "Delete",
+    });
+    if (!approved) return;
+    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      STORAGE_BARISTA_STATE, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+    );
+    const next = snapshot.menuItems.filter((item) => item.id !== id);
+    writePosState(STORAGE_BARISTA_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
+    setStoredMenuItems(next);
+    if (drinkEditId === id) {
+      setDrinkEditId(null);
+      setDrinkName("");
+      setDrinkPrice("");
+    }
+  };
+
+  const DRINK_CATEGORIES: Array<Exclude<BaristaCategory, "all">> = [
+    "espresso", "coffee", "tea", "cold", "snacks",
+  ];
+
+  const renderDrinksManager = () => (
+    <div className="space-y-6">
+      <Card className="border-none shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-xl font-black uppercase tracking-tight">
+            {drinkEditId ? "Edit Drink" : "Add New Drink"}
+          </CardTitle>
+          <CardDescription>
+            {drinkEditId ? "Update the drink details below, then save." : "Enter drink name, price, category and prep time, then save."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Drink Name</p>
+            <Input
+              value={drinkName}
+              onChange={(e) => setDrinkName(e.target.value)}
+              placeholder="e.g. Cappuccino"
+            />
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Price (TSh)</p>
+            <Input
+              type="number"
+              min="0"
+              value={drinkPrice}
+              onChange={(e) => setDrinkPrice(e.target.value)}
+              placeholder="e.g. 3500"
+            />
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Category</p>
+            <select
+              className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-medium"
+              value={drinkCategory}
+              onChange={(e) => setDrinkCategory(e.target.value as Exclude<BaristaCategory, "all">)}
+            >
+              {DRINK_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>{cat.charAt(0).toUpperCase() + cat.slice(1)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Prep Time (min)</p>
+            <Input
+              type="number"
+              min="0"
+              value={drinkPrepMinutes}
+              onChange={(e) => setDrinkPrepMinutes(e.target.value)}
+              placeholder="e.g. 5"
+            />
+          </div>
+          <div className="md:col-span-2 lg:col-span-4 flex gap-2">
+            <Button onClick={saveDrink} className="gap-2">
+              <Plus className="h-4 w-4" />
+              {drinkEditId ? "Save Changes" : "Add Drink"}
+            </Button>
+            {drinkEditId && (
+              <Button variant="outline" onClick={() => { setDrinkEditId(null); setDrinkName(""); setDrinkPrice(""); setDrinkPrepMinutes("5"); setDrinkCategory("coffee"); }}>
+                Cancel
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-none shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-xl font-black uppercase tracking-tight">Drinks Menu</CardTitle>
+          <CardDescription>{storedMenuItems.length} drink{storedMenuItems.length !== 1 ? "s" : ""} on menu</CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader className="bg-muted/10">
+              <TableRow>
+                <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Name</TableHead>
+                <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Category</TableHead>
+                <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Price (TSh)</TableHead>
+                <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Prep (min)</TableHead>
+                <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {storedMenuItems.map((item) => (
+                <TableRow key={item.id} className={drinkEditId === item.id ? "bg-primary/5" : ""}>
+                  <TableCell className="font-bold">{item.name}</TableCell>
+                  <TableCell className="font-bold capitalize">{item.category}</TableCell>
+                  <TableCell className="font-bold">TSh {item.price.toLocaleString()}</TableCell>
+                  <TableCell className="font-bold">{item.prepMinutes} min</TableCell>
+                  <TableCell>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => startEditDrink(item)}>
+                        <Pencil className="h-3 w-3 mr-1" /> Edit
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 px-2 text-red-600 hover:text-red-700 hover:border-red-300" onClick={() => deleteDrink(item.id)}>
+                        <Trash2 className="h-3 w-3 mr-1" /> Delete
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {storedMenuItems.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                    No drinks on menu yet. Add one above.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
   if (isManager) {
   return (
     <div className="space-y-6">
@@ -1237,14 +1422,15 @@ export default function BaristaPage() {
             </CardContent>
           </Card>
         </div>
-        <Tabs value={managerTab} onValueChange={(value) => setManagerTab(value as "inventory" | "finance" | "sales")}>
+        <Tabs value={managerTab} onValueChange={(value) => setManagerTab(value as "inventory" | "finance" | "sales" | "drinks")}>
           <TabsList className="h-10">
             <TabsTrigger value="finance" className="font-black uppercase text-[10px] tracking-widest">Finance</TabsTrigger>
             <TabsTrigger value="inventory" className="font-black uppercase text-[10px] tracking-widest">Inventory</TabsTrigger>
             <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
+            <TabsTrigger value="drinks" className="font-black uppercase text-[10px] tracking-widest">Drinks</TabsTrigger>
           </TabsList>
         </Tabs>
-        {managerTab === "finance" ? renderFinanceTable() : managerTab === "sales" ? renderDirectorSalesTable() : (
+        {managerTab === "drinks" ? renderDrinksManager() : managerTab === "finance" ? renderFinanceTable() : managerTab === "sales" ? renderDirectorSalesTable() : (
           <Card className="border-none shadow-sm">
             <CardHeader>
               <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory from Store</CardTitle>

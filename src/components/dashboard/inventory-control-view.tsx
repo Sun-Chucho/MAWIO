@@ -1707,6 +1707,7 @@ export function InventoryControlView({
         </Card>
       )}
 
+
       {effectiveVisibleTabs.length > 0 && (
         <Tabs value={activeTab ?? ""} onValueChange={(value) => setActiveTab(value as InventoryTab)}>
           <TabsList className="h-11">
@@ -1721,90 +1722,85 @@ export function InventoryControlView({
               </TabsTrigger>
             )}
           </TabsList>
+
+          {isReadOnlyStock && !activeTab && (
+            <Card className="mt-4 border-dashed shadow-none">
+              <CardContent className="p-6 text-center text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Select Kitchen Stock or Barista Stock above to open the table.
+              </CardContent>
+            </Card>
+          )}
+
+          <TabsContent value="kitchen-stock" className="space-y-6 mt-4">
+            {role === "manager" ? (
+              <>
+                <Tabs value={kitchenManagerPane} onValueChange={(value) => setKitchenManagerPane(value as KitchenManagerPane)}>
+                  <TabsList className="h-11 flex-wrap">
+                    <TabsTrigger value="stock" className="font-black uppercase text-[10px] tracking-widest">Stock</TabsTrigger>
+                    <TabsTrigger value="expenses" className="font-black uppercase text-[10px] tracking-widest">Daily Expenses</TabsTrigger>
+                    <TabsTrigger value="entries" className="font-black uppercase text-[10px] tracking-widest">Daily Entries</TabsTrigger>
+                    <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {kitchenManagerPane === "stock" && (
+                  <>
+                    {renderStoreCard("kitchen", "Kitchen Stock", filteredKitchenStore)}
+                    {renderInventoryTable("Kitchen Inventory Records", filteredKitchenInventoryItems, "kitchen")}
+                  </>
+                )}
+                {kitchenManagerPane === "expenses" && renderHistoryCards(kitchenPurchaseHistory, "purchase", "kitchen")}
+                {kitchenManagerPane === "entries" && renderHistoryCards(kitchenDailyHistory, "daily", "kitchen")}
+                {kitchenManagerPane === "sales" && renderKitchenSales()}
+              </>
+            ) : isReadOnlyStock ? (
+              <>
+                {renderStoreCard("kitchen", "Kitchen Stock", filteredKitchenStore)}
+                {renderInventoryTable("Kitchen Inventory Records", filteredKitchenInventoryItems, "kitchen")}
+              </>
+            ) : (
+              <KitchenSessionManager isDirector={isDirector} externalSearchTerm={inventorySearchTerm} />
+            )}
+          </TabsContent>
+
+          <TabsContent value="barista-stock" className="space-y-6 mt-4">
+            {canViewBaristaFinance && (
+              <Tabs value={baristaView} onValueChange={(value) => setBaristaView(value as BaristaManagerPane)}>
+                <TabsList className="h-11">
+                  <TabsTrigger value="finance" className="font-black uppercase text-[10px] tracking-widest">Barista Finances</TabsTrigger>
+                  <TabsTrigger value="inventory" className="font-black uppercase text-[10px] tracking-widest">Inventory</TabsTrigger>
+                  <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
+                  {role === "manager" && (
+                    <TabsTrigger value="purchase" className="font-black uppercase text-[10px] tracking-widest">Daily Purchase</TabsTrigger>
+                  )}
+                </TabsList>
+              </Tabs>
+            )}
+            {(!canViewBaristaFinance || baristaView === "inventory") && (
+              <>
+                {renderStoreCard("barista", "Barista Stock", filteredBaristaStore)}
+                {renderInventoryTable("Barista Inventory Records", filteredBaristaInventoryItems, "barista")}
+              </>
+            )}
+            {canViewBaristaFinance && baristaView === "finance" && renderBaristaFinance()}
+            {canViewBaristaFinance && baristaView === "sales" && renderBaristaSales()}
+            {role === "manager" && baristaView === "purchase" && (
+              <>
+                <KitchenSessionManager isDirector={isDirector} department="barista" externalSearchTerm={inventorySearchTerm} />
+                <section className="space-y-3">
+                  <div>
+                    <h2 className="text-xl font-black uppercase tracking-tight">Saved Barista Daily Purchases</h2>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                      Date cards show what was added from barista daily purchase sessions.
+                    </p>
+                  </div>
+                  {renderHistoryCards(baristaPurchaseHistory, "purchase", "barista")}
+                </section>
+              </>
+            )}
+          </TabsContent>
         </Tabs>
       )}
 
-      {isReadOnlyStock && !activeTab && (
-        <Card className="border-dashed shadow-none">
-          <CardContent className="p-6 text-center text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-            Select Kitchen Stock or Barista Stock above to open the table.
-          </CardContent>
-        </Card>
-      )}
-
-      {activeTab === "kitchen-stock" && (
-        <div className="space-y-6">
-          {role === "manager" ? (
-            <>
-              <Tabs value={kitchenManagerPane} onValueChange={(value) => setKitchenManagerPane(value as KitchenManagerPane)}>
-                <TabsList className="h-11 flex-wrap">
-                  <TabsTrigger value="stock" className="font-black uppercase text-[10px] tracking-widest">Kitchen Stock</TabsTrigger>
-                  <TabsTrigger value="expenses" className="font-black uppercase text-[10px] tracking-widest">Daily Expenses</TabsTrigger>
-                  <TabsTrigger value="entries" className="font-black uppercase text-[10px] tracking-widest">Daily Entries</TabsTrigger>
-                  <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              {kitchenManagerPane === "stock" && (
-                <>
-                  {renderStoreCard("kitchen", "Kitchen Stock", filteredKitchenStore)}
-                  {renderInventoryTable("Kitchen Inventory Records", filteredKitchenInventoryItems, "kitchen")}
-                </>
-              )}
-              {kitchenManagerPane === "expenses" && renderHistoryCards(kitchenPurchaseHistory, "purchase", "kitchen")}
-              {kitchenManagerPane === "entries" && renderHistoryCards(kitchenDailyHistory, "daily", "kitchen")}
-              {kitchenManagerPane === "sales" && renderKitchenSales()}
-            </>
-          ) : isReadOnlyStock ? (
-            <>
-              {renderStoreCard("kitchen", "Kitchen Stock", filteredKitchenStore)}
-              {renderInventoryTable("Kitchen Inventory Records", filteredKitchenInventoryItems, "kitchen")}
-            </>
-          ) : (
-            <KitchenSessionManager isDirector={isDirector} externalSearchTerm={inventorySearchTerm} />
-          )}
-        </div>
-      )}
-
-      {activeTab === "barista-stock" && (
-        <div className="space-y-6">
-          {canViewBaristaFinance && (
-            <Tabs value={baristaView} onValueChange={(value) => setBaristaView(value as BaristaManagerPane)}>
-              <TabsList className="h-11">
-                <TabsTrigger value="finance" className="font-black uppercase text-[10px] tracking-widest">Barista Finances</TabsTrigger>
-                <TabsTrigger value="inventory" className="font-black uppercase text-[10px] tracking-widest">Inventory</TabsTrigger>
-                <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
-                {role === "manager" && (
-                  <TabsTrigger value="purchase" className="font-black uppercase text-[10px] tracking-widest">Daily Purchase</TabsTrigger>
-                )}
-              </TabsList>
-            </Tabs>
-          )}
-          {(!canViewBaristaFinance || baristaView === "inventory") && (
-            <>
-              {renderStoreCard("barista", "Barista Stock", filteredBaristaStore)}
-              {renderInventoryTable("Barista Inventory Records", filteredBaristaInventoryItems, "barista")}
-            </>
-          )}
-          {canViewBaristaFinance && baristaView === "finance" && renderBaristaFinance()}
-          {canViewBaristaFinance && baristaView === "sales" && renderBaristaSales()}
-          {role === "manager" && baristaView === "purchase" && (
-            <>
-              <KitchenSessionManager isDirector={isDirector} department="barista" externalSearchTerm={inventorySearchTerm} />
-              <section className="space-y-3">
-                <div>
-                  <h2 className="text-xl font-black uppercase tracking-tight">Saved Barista Daily Purchases</h2>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                    Date cards show what was added from barista daily purchase sessions.
-                  </p>
-                </div>
-                {renderHistoryCards(baristaPurchaseHistory, "purchase", "barista")}
-              </section>
-            </>
-          )}
-        </div>
-      )}
-
-      {renderHistoryPreview()}
 
       {editModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
