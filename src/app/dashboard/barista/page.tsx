@@ -272,7 +272,7 @@ const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2
 // One-time, per-tier barista clean-slate marker. The suffix `-{scope}` is added
 // at runtime so the standard and premium hotels each purge their own historically
 // co-mingled barista data exactly once. Bump the version to force another purge.
-const BARISTA_TIER_RESET_KEY = "orange-hotel-barista-tier-reset-v1";
+const BARISTA_TIER_RESET_KEY = "orange-hotel-barista-tier-reset-v2";
 
 export default function BaristaPage() {
   const isDirector = useIsDirector();

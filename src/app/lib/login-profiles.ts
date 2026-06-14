@@ -2,29 +2,17 @@
 
 import { Role } from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
+import { getMawioTier } from "@/app/lib/firebase-sync";
 
 export const STORAGE_LOGIN_PROFILES = "orange-hotel-login-profiles";
 export const STORAGE_ACTIVE_USERNAME = "orange-hotel-username";
 export const SESSION_IDENTITY_EVENT = "orange-hotel-session-identity-updated";
 export type LoginProfileScope = "core" | "standard" | "platinum";
 
+// Single source of truth for the active hotel tier: delegate to getMawioTier so
+// the per-tab tier lock is shared and the two resolvers can never disagree.
 export function getLocalMawioTier(): "standard" | "platinum" {
-  if (typeof window !== "undefined") {
-    const params = new URLSearchParams(window.location.search);
-    const queryTier = params.get("tier");
-    if (queryTier === "standard" || queryTier === "platinum") {
-      window.localStorage.setItem("orange-hotel-active-login-scope", queryTier);
-      return queryTier;
-    }
-    const activeScope = window.localStorage.getItem("orange-hotel-active-login-scope");
-    if (activeScope === "standard" || activeScope === "platinum") return activeScope;
-    const localTier = window.localStorage.getItem("mawio-tier");
-    if (localTier === "standard" || localTier === "platinum") {
-      window.localStorage.setItem("orange-hotel-active-login-scope", localTier);
-      return localTier;
-    }
-  }
-  return "standard";
+  return getMawioTier();
 }
 
 export interface LoginUserAccount {

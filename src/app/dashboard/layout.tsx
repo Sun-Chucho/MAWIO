@@ -11,7 +11,7 @@ import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@
 import { MainStoreItem, STORAGE_MAIN_STORE_ITEMS, getStoreItemLabel, normalizeBaristaProductTarget, normalizeStockName } from "@/app/lib/inventory-transfer";
 import { getTotLimit } from "@/app/lib/barista-stock";
 import { normalizeRole } from "@/app/lib/auth";
-import { hydrateStorageKeyFromFirebase } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase, setMawioTier } from "@/app/lib/firebase-sync";
 import { readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeJson, writePosState } from "@/app/lib/storage";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, Home, Hotel, Search, User, Clock, Menu, WalletCards, ReceiptText, Package } from "lucide-react";
@@ -1303,11 +1303,11 @@ export default function DashboardLayout({
                   type="button"
                   onClick={() => {
                     const nextHotel: "standard" | "platinum" = currentHotelView === "standard" ? "platinum" : "standard";
-                    setCurrentHotelView(nextHotel);
                     if (typeof window !== "undefined") {
-                      localStorage.setItem("orange-hotel-active-login-scope", nextHotel);
-                      localStorage.setItem("mawio-tier", nextHotel);
-                      window.dispatchEvent(new CustomEvent("hotel-view-changed", { detail: { hotel: nextHotel } }));
+                      // Rebind the per-tab tier lock, then reload so every page
+                      // effect/subscription re-initializes against the new hotel.
+                      setMawioTier(nextHotel);
+                      window.location.reload();
                     }
                   }}
                   className={cn(

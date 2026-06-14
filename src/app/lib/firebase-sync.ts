@@ -110,21 +110,48 @@ export function subscribeToConnectionStatus(onChange: (connected: boolean) => vo
 
 const FIREBASE_STORAGE_ROOT = "mawio";
 
+// The hotel tier is LOCKED per browser tab. localStorage is shared across every
+// tab/PWA of the same origin, so re-reading the global scope flag on each storage
+// operation let a second hotel opened elsewhere hijack this tab's reads/writes
+// (e.g. a "standard" sale being saved into the platinum node). We resolve the
+// tier once and then freeze it for this tab's lifetime. A `?tier=` query param or
+// an explicit setMawioTier() call (used by the director hotel switcher, which
+// reloads) is the only way to (re)bind it.
+let _lockedMawioTier: "standard" | "platinum" | null = null;
+
+export function setMawioTier(tier: "standard" | "platinum") {
+  _lockedMawioTier = tier;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("mawio-tier", tier);
+    window.localStorage.setItem("orange-hotel-active-login-scope", tier);
+  }
+}
+
 export function getMawioTier(): "standard" | "platinum" {
   if (typeof window !== "undefined") {
     const params = new URLSearchParams(window.location.search);
     const queryTier = params.get("tier");
     if (queryTier === "standard" || queryTier === "platinum") {
+      _lockedMawioTier = queryTier;
       window.localStorage.setItem("mawio-tier", queryTier);
       window.localStorage.setItem("orange-hotel-active-login-scope", queryTier);
       return queryTier;
     }
+    // Once resolved for this tab, the tier is frozen so another hotel opened in a
+    // different tab cannot change which node this tab reads from / writes to.
+    if (_lockedMawioTier) return _lockedMawioTier;
     // The active login scope is the single source of truth for which hotel the
     // user is signed into. Fall back to the legacy `mawio-tier` flag for safety.
     const activeScope = window.localStorage.getItem("orange-hotel-active-login-scope");
-    if (activeScope === "standard" || activeScope === "platinum") return activeScope;
+    if (activeScope === "standard" || activeScope === "platinum") {
+      _lockedMawioTier = activeScope;
+      return activeScope;
+    }
     const localTier = window.localStorage.getItem("mawio-tier");
-    if (localTier === "standard" || localTier === "platinum") return localTier;
+    if (localTier === "standard" || localTier === "platinum") {
+      _lockedMawioTier = localTier;
+      return localTier;
+    }
   }
   return "standard";
 }
