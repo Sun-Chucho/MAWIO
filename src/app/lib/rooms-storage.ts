@@ -49,24 +49,28 @@ export function getDefaultRooms(scope?: "standard" | "platinum"): Room[] {
   return getDefaultRoomsByType("Standard").concat(getDefaultRoomsByType("Platinum"));
 }
 
-function getRoomRateByType(type: Room["type"]) {
+function getRoomRateByType(type: Room["type"], scope: "standard" | "platinum") {
+  if (scope === "platinum") {
+    return type === "Standard" ? PREMIUM_STANDARD_ROOM_PRICE : PREMIUM_DELUXE_ROOM_PRICE;
+  }
   return type === "Standard" ? STANDARD_ROOM_PRICE : PLATINUM_ROOM_PRICE;
 }
 
-function normalizeRoomRates(rooms: Room[]): Room[] {
+function normalizeRoomRates(rooms: Room[], scope: "standard" | "platinum"): Room[] {
   return rooms.map((room) => {
-    const price = getRoomRateByType(room.type);
+    const price = getRoomRateByType(room.type, scope);
     return room.price === price ? room : { ...room, price };
   });
 }
 
 export function readRoomsState(scope?: "standard" | "platinum"): Room[] {
-  const key = getRoomStorageKey(scope);
+  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
+  const key = getRoomStorageKey(activeScope);
   const saved = readJson<Room[]>(key);
   if (!Array.isArray(saved) || saved.length === 0) {
-    return getDefaultRooms(scope);
+    return getDefaultRooms(activeScope);
   }
-  return normalizeRoomRates(saved);
+  return normalizeRoomRates(saved, activeScope);
 }
 
 function hasSavedRoomsState(scope?: "standard" | "platinum"): boolean {
@@ -76,8 +80,9 @@ function hasSavedRoomsState(scope?: "standard" | "platinum"): boolean {
 }
 
 export function writeRoomsState(rooms: Room[], scope?: "standard" | "platinum") {
-  const normalizedRooms = normalizeRoomRates(rooms);
-  const key = getRoomStorageKey(scope);
+  const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
+  const normalizedRooms = normalizeRoomRates(rooms, activeScope);
+  const key = getRoomStorageKey(activeScope);
   const saved = readJson<Room[]>(key);
   if (Array.isArray(saved) && JSON.stringify(saved) === JSON.stringify(normalizedRooms)) return;
   writeJson(key, normalizedRooms);

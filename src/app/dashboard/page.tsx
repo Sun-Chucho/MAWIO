@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { readStoredRole } from "@/app/lib/auth";
 import { Role, ROOMS } from "@/app/lib/mock-data";
-import { readCashierState, readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE } from "@/app/lib/storage";
+import { getActiveBaristaStateKey, getActiveKitchenStateKey, readCashierState, readJson, readPosState } from "@/app/lib/storage";
 import { LaundryRecord, STORAGE_LAUNDRY_RECORDS } from "@/app/lib/laundry";
 import { ExpenseRecord, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -90,12 +90,15 @@ export default function OverviewPage() {
       return { paid, credit };
     };
 
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const activeBaristaKey = getActiveBaristaStateKey();
+
     const refreshOverview = () => {
       const savedRole = readStoredRole();
       const savedShift = localStorage.getItem("orange-hotel-shift");
       const cashierSnapshot = readCashierState<CashierTransaction>("orange-hotel-cashier-transactions", "orange-hotel-cashier-seq", 84920);
-      const kitchenSnapshot = readPosState<QueueTicket, POSPaymentRecord, unknown>(STORAGE_KITCHEN_STATE, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", "orange-hotel-kitchen-payments", "orange-hotel-kitchen-menu", 300);
-      const baristaSnapshot = readPosState<QueueTicket, POSPaymentRecord, unknown>(STORAGE_BARISTA_STATE, "orange-hotel-barista-orders", "orange-hotel-barista-seq", "orange-hotel-barista-payments", "orange-hotel-barista-menu", 490);
+      const kitchenSnapshot = readPosState<QueueTicket, POSPaymentRecord, unknown>(activeKitchenKey, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", "orange-hotel-kitchen-payments", "orange-hotel-kitchen-menu", 300);
+      const baristaSnapshot = readPosState<QueueTicket, POSPaymentRecord, unknown>(activeBaristaKey, "orange-hotel-barista-orders", "orange-hotel-barista-seq", "orange-hotel-barista-payments", "orange-hotel-barista-menu", 490);
       const laundry = readJson<LaundryRecord[]>(STORAGE_LAUNDRY_RECORDS) ?? [];
       const expenses = readJson<ExpenseRecord[]>(STORAGE_EXPENSES) ?? [];
       setRooms(
@@ -131,8 +134,8 @@ export default function OverviewPage() {
     refreshOverview();
 
     const unsubscribeCashier = subscribeToSyncedStorageKey("orange-hotel-cashier-state", refreshOverview);
-    const unsubscribeKitchen = subscribeToSyncedStorageKey(STORAGE_KITCHEN_STATE, refreshOverview);
-    const unsubscribeBarista = subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, refreshOverview);
+    const unsubscribeKitchen = subscribeToSyncedStorageKey(activeKitchenKey, refreshOverview);
+    const unsubscribeBarista = subscribeToSyncedStorageKey(activeBaristaKey, refreshOverview);
     const unsubscribeLaundry = subscribeToSyncedStorageKey(STORAGE_LAUNDRY_RECORDS, refreshOverview);
     const unsubscribeExpenses = subscribeToSyncedStorageKey(STORAGE_EXPENSES, refreshOverview);
     const unsubscribeRooms = subscribeToSyncedStorageKey("orange-hotel-rooms-state", refreshOverview);

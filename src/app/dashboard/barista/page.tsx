@@ -18,7 +18,9 @@ import {
 } from "@/app/lib/inventory-transfer";
 import { findStoreItemForMenuName, formatTotStatus, getMenuStockStatus, getRemainingTots, getTotLimit, isTotTrackedMenuItem, normalizeBaristaMenuItems } from "@/app/lib/barista-stock";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
-import { readJson, readPosState, STORAGE_BARISTA_STATE, writeJson, writePosState } from "@/app/lib/storage";
+import { getActiveBaristaStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
+import { PREMIUM_BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
+import { getLocalMawioTier } from "@/app/lib/login-profiles";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -258,6 +260,19 @@ function isTotInventoryItem(item: Pick<InventoryItem, "name" | "totPerBottle">) 
   return (typeof item.totPerBottle === "number" && item.totPerBottle > 0) || /\s*\(?TOTS?\)?$/i.test(item.name);
 }
 
+function buildPremiumSeedMenuItems(): BaristaMenuItem[] {
+  return PREMIUM_BARISTA_INVENTORY_SEED
+    .filter((item) => item.name && item.status === "ACTIVE")
+    .map((item, idx) => ({
+      id: `premium-seed-${idx}`,
+      name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
+      price: item.sellingPrice ?? 0,
+      category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
+      prepMinutes: 2,
+      barcode: item.barcode ?? "",
+    }));
+}
+
 export default function BaristaPage() {
   const isDirector = useIsDirector();
   const { confirm, dialog } = useConfirmDialog();
@@ -340,10 +355,13 @@ export default function BaristaPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const activeBaristaKey = getActiveBaristaStateKey();
+    const scope = getLocalMawioTier();
+
     const applyBaristaSnapshot = () => {
       if (cancelled) return;
       const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-        STORAGE_BARISTA_STATE,
+        activeBaristaKey,
         STORAGE_TICKETS,
         STORAGE_SEQ,
         STORAGE_PAYMENTS,
@@ -353,19 +371,26 @@ export default function BaristaPage() {
       setTickets(snapshot.tickets);
       setTicketSeq(snapshot.ticketSeq);
       setBaristaPayments(snapshot.payments);
-      
+
       const inventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
       setInventoryItems(inventory);
-      setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
+
+      let menuItems = snapshot.menuItems;
+      if (menuItems.length === 0 && scope === "platinum") {
+        menuItems = buildPremiumSeedMenuItems();
+        writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+      }
+
+      setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
       setPosHydrated(true);
     };
 
     void Promise.all([
-      hydrateStorageKeyFromFirebase(STORAGE_BARISTA_STATE).catch(() => undefined),
+      hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
       hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS).catch(() => undefined),
       hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS).catch(() => undefined),
     ]).finally(applyBaristaSnapshot);
-    const unsubscribeBarista = subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, applyBaristaSnapshot);
+    const unsubscribeBarista = subscribeToSyncedStorageKey(activeBaristaKey, applyBaristaSnapshot);
     const unsubscribeInventory = subscribeToSyncedStorageKey(STORAGE_INVENTORY_ITEMS, applyBaristaSnapshot);
 
     return () => {
@@ -402,8 +427,9 @@ export default function BaristaPage() {
   }, [queueTab]);
 
   useEffect(() => {
+    const activeBaristaKey = getActiveBaristaStateKey();
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-      STORAGE_BARISTA_STATE,
+      activeBaristaKey,
       STORAGE_TICKETS,
       STORAGE_SEQ,
       STORAGE_PAYMENTS,
@@ -413,7 +439,7 @@ export default function BaristaPage() {
     const syncedMenuItems = syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, inventoryItems, baristaStoreItems);
 
     if (JSON.stringify(syncedMenuItems) !== JSON.stringify(snapshot.menuItems)) {
-      writePosState(STORAGE_BARISTA_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, syncedMenuItems);
+      writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, syncedMenuItems);
     }
 
     if (JSON.stringify(syncedMenuItems) !== JSON.stringify(storedMenuItems)) {
@@ -1111,7 +1137,7 @@ export default function BaristaPage() {
     const nextPayments = [paymentRecord, ...baristaPayments];
     setTickets(nextTickets);
     setBaristaPayments(nextPayments);
-    writePosState(STORAGE_BARISTA_STATE, nextTickets, nextSeq, nextPayments, storedMenuItems);
+    writePosState(getActiveBaristaStateKey(), nextTickets, nextSeq, nextPayments, storedMenuItems);
 
     setCart([]);
     setPendingOrder(null);
@@ -1145,8 +1171,9 @@ export default function BaristaPage() {
     if (!approved) return;
     setDeliveringTicketId(id);
     try {
+      const activeBaristaKey = getActiveBaristaStateKey();
       const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-        STORAGE_BARISTA_STATE,
+        activeBaristaKey,
         STORAGE_TICKETS,
         STORAGE_SEQ,
         STORAGE_PAYMENTS,
@@ -1165,7 +1192,7 @@ export default function BaristaPage() {
       setTicketSeq(snapshot.ticketSeq);
       setBaristaPayments(sourcePayments);
       setStoredMenuItems(sourceMenuItems);
-      writePosState(STORAGE_BARISTA_STATE, nextTickets, snapshot.ticketSeq, sourcePayments, sourceMenuItems);
+      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, sourcePayments, sourceMenuItems);
     } finally {
       setDeliveringTicketId(null);
     }
@@ -1200,7 +1227,7 @@ export default function BaristaPage() {
 
     const nextTickets = tickets.filter((ticket) => ticket.id !== id);
     setTickets(nextTickets);
-    writePosState(STORAGE_BARISTA_STATE, nextTickets, ticketSeq, baristaPayments, storedMenuItems);
+    writePosState(getActiveBaristaStateKey(), nextTickets, ticketSeq, baristaPayments, storedMenuItems);
   };
 
   const saveDrink = () => {
@@ -1209,8 +1236,9 @@ export default function BaristaPage() {
     if (!name || isNaN(price) || price < 0) return;
     const prep = Math.max(0, parseInt(drinkPrepMinutes, 10) || 5);
 
+    const activeBaristaKey = getActiveBaristaStateKey();
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-      STORAGE_BARISTA_STATE, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
     );
     let next: BaristaMenuItem[];
     if (drinkEditId) {
@@ -1227,7 +1255,7 @@ export default function BaristaPage() {
       };
       next = [...snapshot.menuItems, newDrink];
     }
-    writePosState(STORAGE_BARISTA_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
+    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
     setStoredMenuItems(next);
     setDrinkEditId(null);
     setDrinkName("");
@@ -1251,11 +1279,12 @@ export default function BaristaPage() {
       actionLabel: "Delete",
     });
     if (!approved) return;
+    const activeBaristaKey = getActiveBaristaStateKey();
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-      STORAGE_BARISTA_STATE, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
     );
     const next = snapshot.menuItems.filter((item) => item.id !== id);
-    writePosState(STORAGE_BARISTA_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
+    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
     setStoredMenuItems(next);
     if (drinkEditId === id) {
       setDrinkEditId(null);

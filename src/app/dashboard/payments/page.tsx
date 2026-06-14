@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { readStoredRole } from "@/app/lib/auth";
 import { Role } from "@/app/lib/mock-data";
-import { readCashierState, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeCashierState, writePosState } from "@/app/lib/storage";
+import { getActiveBaristaStateKey, getActiveKitchenStateKey, readCashierState, readPosState, writeCashierState, writePosState } from "@/app/lib/storage";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -185,10 +185,13 @@ export default function PaymentsPage() {
   }, []);
 
   useEffect(() => {
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const activeBaristaKey = getActiveBaristaStateKey();
+
     const refreshPayments = () => {
       const cashierSnapshot = readCashierState<BookingRecord>(STORAGE_BOOKING_TX, "orange-hotel-cashier-seq", 84920);
       const kitchenSnapshot = readPosState<unknown, KitchenPaymentRecord, unknown>(
-        STORAGE_KITCHEN_STATE,
+        activeKitchenKey,
         "orange-hotel-kitchen-tickets",
         "orange-hotel-kitchen-seq",
         STORAGE_KITCHEN_PAYMENTS,
@@ -196,7 +199,7 @@ export default function PaymentsPage() {
         300,
       );
       const baristaSnapshot = readPosState<unknown, BaristaPaymentRecord, unknown>(
-        STORAGE_BARISTA_STATE,
+        activeBaristaKey,
         "orange-hotel-barista-orders",
         "orange-hotel-barista-seq",
         STORAGE_BARISTA_PAYMENTS,
@@ -226,8 +229,8 @@ export default function PaymentsPage() {
     refreshPayments();
 
     const unsubscribeCashier = subscribeToSyncedStorageKey("orange-hotel-cashier-state", refreshPayments);
-    const unsubscribeKitchen = subscribeToSyncedStorageKey(STORAGE_KITCHEN_STATE, refreshPayments);
-    const unsubscribeBarista = subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, refreshPayments);
+    const unsubscribeKitchen = subscribeToSyncedStorageKey(activeKitchenKey, refreshPayments);
+    const unsubscribeBarista = subscribeToSyncedStorageKey(activeBaristaKey, refreshPayments);
 
     return () => {
       unsubscribeCashier();
@@ -352,19 +355,21 @@ export default function PaymentsPage() {
       setBookingTransactions(nextTransactions);
       writeCashierState(nextTransactions, snapshot.receiptSeq);
     } else if (selectedCredit.source === "kitchen") {
-      const kitchenSnapshot = readPosState<unknown, KitchenPaymentRecord, unknown>(STORAGE_KITCHEN_STATE, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", STORAGE_KITCHEN_PAYMENTS, "orange-hotel-kitchen-menu", 300);
+      const activeKitchenKey = getActiveKitchenStateKey();
+      const kitchenSnapshot = readPosState<unknown, KitchenPaymentRecord, unknown>(activeKitchenKey, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", STORAGE_KITCHEN_PAYMENTS, "orange-hotel-kitchen-menu", 300);
       const nextPayments = kitchenSnapshot.payments.map((tx) =>
         tx.id === selectedCredit.id ? { ...tx, status: "completed" as const, method } : tx,
       );
       setKitchenPayments(nextPayments);
-      writePosState(STORAGE_KITCHEN_STATE, kitchenSnapshot.tickets, kitchenSnapshot.ticketSeq, nextPayments, kitchenSnapshot.menuItems);
+      writePosState(activeKitchenKey, kitchenSnapshot.tickets, kitchenSnapshot.ticketSeq, nextPayments, kitchenSnapshot.menuItems);
     } else {
-      const baristaSnapshot = readPosState<unknown, BaristaPaymentRecord, unknown>(STORAGE_BARISTA_STATE, "orange-hotel-barista-orders", "orange-hotel-barista-seq", STORAGE_BARISTA_PAYMENTS, "orange-hotel-barista-menu", 490);
+      const activeBaristaKey = getActiveBaristaStateKey();
+      const baristaSnapshot = readPosState<unknown, BaristaPaymentRecord, unknown>(activeBaristaKey, "orange-hotel-barista-orders", "orange-hotel-barista-seq", STORAGE_BARISTA_PAYMENTS, "orange-hotel-barista-menu", 490);
       const nextPayments = baristaSnapshot.payments.map((tx) =>
         tx.id === selectedCredit.id ? { ...tx, status: "completed" as const, method } : tx,
       );
       setBaristaPayments(nextPayments);
-      writePosState(STORAGE_BARISTA_STATE, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, nextPayments, baristaSnapshot.menuItems);
+      writePosState(activeBaristaKey, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, nextPayments, baristaSnapshot.menuItems);
     }
 
     setShowMethodPopup(false);

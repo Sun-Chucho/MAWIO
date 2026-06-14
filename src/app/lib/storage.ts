@@ -11,6 +11,18 @@ export function getScopedStorageKey(baseKey: string, scope?: "standard" | "plati
   return activeScope === "platinum" ? `${baseKey}-platinum` : baseKey;
 }
 
+export function getActiveCashierStateKey(): string {
+  return getScopedStorageKey(STORAGE_CASHIER_STATE);
+}
+
+export function getActiveBaristaStateKey(): string {
+  return getScopedStorageKey(STORAGE_BARISTA_STATE);
+}
+
+export function getActiveKitchenStateKey(): string {
+  return getScopedStorageKey(STORAGE_KITCHEN_STATE);
+}
+
 interface CashierState<TTransaction> {
   transactions: TTransaction[];
   receiptSeq: number;
@@ -54,7 +66,8 @@ export function readCashierState<TTransaction>(
   legacySeqKey: string,
   defaultSeq: number,
 ): CashierState<TTransaction> {
-  const snapshot = readJson<CashierState<TTransaction>>(STORAGE_CASHIER_STATE);
+  const activeKey = getActiveCashierStateKey();
+  const snapshot = readJson<CashierState<TTransaction>>(activeKey);
   if (snapshot) {
     return {
       transactions: Array.isArray(snapshot.transactions) ? snapshot.transactions : [],
@@ -73,7 +86,7 @@ export function readCashierState<TTransaction>(
 }
 
 export function writeCashierState<TTransaction>(transactions: TTransaction[], receiptSeq: number) {
-  writeJson(STORAGE_CASHIER_STATE, { transactions, receiptSeq });
+  writeJson(getActiveCashierStateKey(), { transactions, receiptSeq });
 }
 
 export function readPosState<TTicket, TPayment, TMenu>(

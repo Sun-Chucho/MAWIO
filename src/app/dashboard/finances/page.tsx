@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExpenseRecord, STORAGE_EXPENSES, getExpenseDepartmentLabel } from "@/app/lib/expenses";
 import { LaundryRecord, STORAGE_LAUNDRY_RECORDS } from "@/app/lib/laundry";
-import { readCashierState, readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE } from "@/app/lib/storage";
+import { getActiveBaristaStateKey, getActiveKitchenStateKey, readCashierState, readJson, readPosState } from "@/app/lib/storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -50,10 +50,13 @@ export default function FinancesPage() {
   const [selectedDate, setSelectedDate] = useState("");
 
   useEffect(() => {
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const activeBaristaKey = getActiveBaristaStateKey();
+
     const refreshFinances = () => {
       const cashierSnapshot = readCashierState<BookingRecord>("orange-hotel-cashier-transactions", "orange-hotel-cashier-seq", 84920);
-      const kitchenSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(STORAGE_KITCHEN_STATE, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", "orange-hotel-kitchen-payments", "orange-hotel-kitchen-menu", 300);
-      const baristaSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(STORAGE_BARISTA_STATE, "orange-hotel-barista-orders", "orange-hotel-barista-seq", "orange-hotel-barista-payments", "orange-hotel-barista-menu", 490);
+      const kitchenSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(activeKitchenKey, "orange-hotel-kitchen-tickets", "orange-hotel-kitchen-seq", "orange-hotel-kitchen-payments", "orange-hotel-kitchen-menu", 300);
+      const baristaSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(activeBaristaKey, "orange-hotel-barista-orders", "orange-hotel-barista-seq", "orange-hotel-barista-payments", "orange-hotel-barista-menu", 490);
       setBookings(cashierSnapshot.transactions);
       setKitchenPayments(kitchenSnapshot.payments);
       setBaristaPayments(baristaSnapshot.payments);
@@ -64,15 +67,15 @@ export default function FinancesPage() {
     refreshFinances();
     void Promise.all([
       hydrateStorageKeyFromFirebase("orange-hotel-cashier-state"),
-      hydrateStorageKeyFromFirebase(STORAGE_KITCHEN_STATE),
-      hydrateStorageKeyFromFirebase(STORAGE_BARISTA_STATE),
+      hydrateStorageKeyFromFirebase(activeKitchenKey),
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
       hydrateStorageKeyFromFirebase(STORAGE_LAUNDRY_RECORDS),
       hydrateStorageKeyFromFirebase(STORAGE_EXPENSES),
     ]).finally(refreshFinances);
     const unsubscribers = [
       subscribeToSyncedStorageKey("orange-hotel-cashier-state", refreshFinances),
-      subscribeToSyncedStorageKey(STORAGE_KITCHEN_STATE, refreshFinances),
-      subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, refreshFinances),
+      subscribeToSyncedStorageKey(activeKitchenKey, refreshFinances),
+      subscribeToSyncedStorageKey(activeBaristaKey, refreshFinances),
       subscribeToSyncedStorageKey(STORAGE_LAUNDRY_RECORDS, refreshFinances),
       subscribeToSyncedStorageKey(STORAGE_EXPENSES, refreshFinances),
     ];

@@ -10,7 +10,7 @@ import {
   STORAGE_STOCK_SALES,
   StockSalesRow,
 } from "@/app/lib/fnb-control";
-import { readCashierState, readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE } from "@/app/lib/storage";
+import { getActiveBaristaStateKey, getActiveKitchenStateKey, readCashierState, readJson, readPosState } from "@/app/lib/storage";
 import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import {
   Area,
@@ -151,6 +151,9 @@ export default function AnalyticsPage() {
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
 
   useEffect(() => {
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const activeBaristaKey = getActiveBaristaStateKey();
+
     const applyAnalyticsSnapshot = () => {
       const cashierSnapshot = readCashierState<BookingTransaction>(
         "orange-hotel-cashier-transactions",
@@ -158,7 +161,7 @@ export default function AnalyticsPage() {
         84920,
       );
       const kitchenSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(
-        STORAGE_KITCHEN_STATE,
+        activeKitchenKey,
         "orange-hotel-kitchen-tickets",
         "orange-hotel-kitchen-seq",
         "orange-hotel-kitchen-payments",
@@ -166,7 +169,7 @@ export default function AnalyticsPage() {
         300,
       );
       const baristaSnapshot = readPosState<unknown, PosPaymentRecord, unknown>(
-        STORAGE_BARISTA_STATE,
+        activeBaristaKey,
         "orange-hotel-barista-orders",
         "orange-hotel-barista-seq",
         "orange-hotel-barista-payments",
@@ -188,8 +191,8 @@ export default function AnalyticsPage() {
 
     const unsubscribers = [
       subscribeToSyncedStorageKey("orange-hotel-cashier-state", applyAnalyticsSnapshot),
-      subscribeToSyncedStorageKey(STORAGE_KITCHEN_STATE, applyAnalyticsSnapshot),
-      subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, applyAnalyticsSnapshot),
+      subscribeToSyncedStorageKey(activeKitchenKey, applyAnalyticsSnapshot),
+      subscribeToSyncedStorageKey(activeBaristaKey, applyAnalyticsSnapshot),
       subscribeToSyncedStorageKey(STORAGE_BEVERAGE_COST, applyAnalyticsSnapshot),
       subscribeToSyncedStorageKey(STORAGE_RECIPE_COST, applyAnalyticsSnapshot),
       subscribeToSyncedStorageKey(STORAGE_STOCK_SALES, applyAnalyticsSnapshot),

@@ -21,7 +21,7 @@ import {
   StoreUsageLog,
 } from "@/app/lib/inventory-transfer";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
-import { readJson, readPosState, STORAGE_KITCHEN_STATE, writeJson, writePosState } from "@/app/lib/storage";
+import { getActiveKitchenStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -152,10 +152,12 @@ export default function KitchenPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const activeKitchenKey = getActiveKitchenStateKey();
+
     const applyKitchenSnapshot = () => {
       if (cancelled) return;
       const snapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
-        STORAGE_KITCHEN_STATE,
+        activeKitchenKey,
         STORAGE_TICKETS,
         STORAGE_SEQ,
         STORAGE_PAYMENTS,
@@ -169,12 +171,12 @@ export default function KitchenPage() {
       setMenuItems(nextMenuItems);
       setPosHydrated(true);
       if (JSON.stringify(nextMenuItems) !== JSON.stringify(snapshot.menuItems)) {
-        writePosState(STORAGE_KITCHEN_STATE, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, nextMenuItems);
+        writePosState(activeKitchenKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, nextMenuItems);
       }
     };
 
-    void hydrateStorageKeyFromFirebase(STORAGE_KITCHEN_STATE).finally(applyKitchenSnapshot);
-    const unsubscribeKitchen = subscribeToSyncedStorageKey(STORAGE_KITCHEN_STATE, applyKitchenSnapshot);
+    void hydrateStorageKeyFromFirebase(activeKitchenKey).finally(applyKitchenSnapshot);
+    const unsubscribeKitchen = subscribeToSyncedStorageKey(activeKitchenKey, applyKitchenSnapshot);
 
     return () => {
       cancelled = true;
@@ -555,7 +557,7 @@ export default function KitchenPage() {
     const nextPayments = [paymentRecord, ...kitchenPayments];
     setTickets(nextTickets);
     setKitchenPayments(nextPayments);
-    writePosState(STORAGE_KITCHEN_STATE, nextTickets, nextSeq, nextPayments, menuItems);
+    writePosState(getActiveKitchenStateKey(), nextTickets, nextSeq, nextPayments, menuItems);
 
     setCart([]);
     setPendingOrder(null);
@@ -589,7 +591,7 @@ export default function KitchenPage() {
     if (!approved) return;
     const nextTickets = tickets.filter((ticket) => ticket.id !== id);
     setTickets(nextTickets);
-    writePosState(STORAGE_KITCHEN_STATE, nextTickets, ticketSeq, kitchenPayments, menuItems);
+    writePosState(getActiveKitchenStateKey(), nextTickets, ticketSeq, kitchenPayments, menuItems);
   };
 
   const cancelTicket = async (id: string) => {
@@ -614,7 +616,7 @@ export default function KitchenPage() {
 
     const nextTickets = tickets.filter((t) => t.id !== id);
     setTickets(nextTickets);
-    writePosState(STORAGE_KITCHEN_STATE, nextTickets, ticketSeq, kitchenPayments, menuItems);
+    writePosState(getActiveKitchenStateKey(), nextTickets, ticketSeq, kitchenPayments, menuItems);
   };
 
   if (isManager) {
