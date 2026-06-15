@@ -292,7 +292,14 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     : serviceWorkerReady
       ? "App installer ready"
       : "Preparing app installer";
-  const loginDestination = roleConfig.destination;
+  // Pin the hotel tier directly into the destination URL for tier-scoped logins.
+  // `?tier=` is the highest-priority, deterministic signal getMawioTier reads, so
+  // the dashboard tab can never fall back to the browser-wide active-login-scope
+  // (which a standard session in another tab/login can overwrite) — that shared
+  // fallback is what made the premium dashboards render standard data.
+  const tierQuery =
+    loginScope === "platinum" ? "?tier=platinum" : loginScope === "standard" ? "?tier=standard" : "";
+  const loginDestination = `${roleConfig.destination}${tierQuery}`;
   const fallbackLoginScript = `
 (() => {
   const formRole = ${JSON.stringify(role)};

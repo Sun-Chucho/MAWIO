@@ -119,9 +119,35 @@ const FIREBASE_STORAGE_ROOT = "mawio";
 // reloads) is the only way to (re)bind it.
 let _lockedMawioTier: "standard" | "platinum" | null = null;
 
+// Per-TAB tier pin. sessionStorage is scoped to a single tab/window and is NOT
+// shared across tabs (unlike localStorage), so once a tab is bound to a hotel it
+// survives reloads without another hotel's tab being able to hijack it.
+const TAB_TIER_SESSION_KEY = "mawio-tab-tier";
+
+function readTabTier(): "standard" | "platinum" | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.sessionStorage.getItem(TAB_TIER_SESSION_KEY);
+    return value === "standard" || value === "platinum" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTabTier(tier: "standard" | "platinum") {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(TAB_TIER_SESSION_KEY, tier);
+  } catch {
+    // sessionStorage may be unavailable (private mode quotas); the in-memory
+    // lock and the URL param still keep the tab on the right tier.
+  }
+}
+
 export function setMawioTier(tier: "standard" | "platinum") {
   _lockedMawioTier = tier;
   if (typeof window !== "undefined") {
+    writeTabTier(tier);
     window.localStorage.setItem("mawio-tier", tier);
     window.localStorage.setItem("orange-hotel-active-login-scope", tier);
   }
@@ -133,6 +159,7 @@ export function getMawioTier(): "standard" | "platinum" {
     const queryTier = params.get("tier");
     if (queryTier === "standard" || queryTier === "platinum") {
       _lockedMawioTier = queryTier;
+      writeTabTier(queryTier);
       window.localStorage.setItem("mawio-tier", queryTier);
       window.localStorage.setItem("orange-hotel-active-login-scope", queryTier);
       return queryTier;
@@ -140,16 +167,24 @@ export function getMawioTier(): "standard" | "platinum" {
     // Once resolved for this tab, the tier is frozen so another hotel opened in a
     // different tab cannot change which node this tab reads from / writes to.
     if (_lockedMawioTier) return _lockedMawioTier;
-    // The active login scope is the single source of truth for which hotel the
-    // user is signed into. Fall back to the legacy `mawio-tier` flag for safety.
+    // Per-tab pin survives reloads and is immune to other tabs (see above).
+    const tabTier = readTabTier();
+    if (tabTier) {
+      _lockedMawioTier = tabTier;
+      return tabTier;
+    }
+    // First load of a fresh tab with no URL param: fall back to the browser-wide
+    // login scope, then pin it to this tab so later cross-tab logins can't move it.
     const activeScope = window.localStorage.getItem("orange-hotel-active-login-scope");
     if (activeScope === "standard" || activeScope === "platinum") {
       _lockedMawioTier = activeScope;
+      writeTabTier(activeScope);
       return activeScope;
     }
     const localTier = window.localStorage.getItem("mawio-tier");
     if (localTier === "standard" || localTier === "platinum") {
       _lockedMawioTier = localTier;
+      writeTabTier(localTier);
       return localTier;
     }
   }
