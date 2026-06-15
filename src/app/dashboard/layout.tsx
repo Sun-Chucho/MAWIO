@@ -1159,6 +1159,27 @@ export default function DashboardLayout({
     };
   }, [router]);
 
+  // Keep the resolved hotel tier pinned in the URL of EVERY dashboard route.
+  // Sidebar links are static and drop the `?tier=` param on client navigation,
+  // so without this a reload/shared link could fall back to the browser-wide
+  // login scope (which the other hotel can overwrite) and render the wrong
+  // hotel's data. Re-pinning here — in the layout that wraps all dashboards —
+  // fixes every dashboard from one place. getLocalMawioTier() reads the per-tab
+  // sessionStorage pin, so the value is always this tab's hotel.
+  useEffect(() => {
+    if (!mounted || typeof window === "undefined") return;
+    const tier = getLocalMawioTier();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("tier") === tier) return;
+    params.set("tier", tier);
+    const query = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+  }, [mounted, pathname]);
+
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth >= 768) {
