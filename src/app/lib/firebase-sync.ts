@@ -160,23 +160,71 @@ function toStoragePath(key: string) {
   return `${FIREBASE_STORAGE_ROOT}/${getMawioTier()}/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
-// ── Tier-scoped local cache keys ────────────────────────────────────────────
+// ── Tier-tagged local cache keys ────────────────────────────────────────────
 // Backend separation already happens through the Firebase path / server `tier`
 // param (`mawio/{tier}/{key}`). The browser localStorage cache, however, is a
-// single shared bucket, so without scoping the two hotels would clobber each
-// other locally and merge on the next sync. We therefore namespace every synced
-// business key for the premium (platinum) tier. Standard keeps the bare keys so
-// existing standard data continues to load unchanged.
+// single shared bucket. Previously only the premium tier was namespaced while
+// standard kept the bare keys — that left the bare key as a bucket both hotels
+// could end up reading/writing whenever the tier briefly resolved to the
+// "standard" default, which is what produced the cross-tier merge errors.
+//
+// We now tag EVERY synced business key with an explicit per-tier prefix —
+// `S_` for standard, `P_` for premium (platinum) — so the two hotels share no
+// cache bucket at all. The tag is applied centrally here, so it propagates to
+// every record, entity and synced key automatically. Switching tiers simply
+// changes which prefix is read, giving a single unified store that is filtered
+// by data source.
 //
 // Login profiles are intentionally excluded: they have their own dedicated
 // per-scope keys (`...-standard` / `...-platinum`) managed in login-profiles.ts.
 // (`TIER_SCOPED_KEYS` / `TIER_SHARED_KEYS` are defined below, after the key
 // lists they are built from.)
+export function getTierTag(): "S_" | "P_" {
+  return getMawioTier() === "platinum" ? "P_" : "S_";
+}
+
 export function getTierScopedLocalKey(baseKey: string): string {
   if (typeof window === "undefined") return baseKey;
-  if (getMawioTier() !== "platinum") return baseKey;
   if (!TIER_SCOPED_KEYS.has(baseKey)) return baseKey;
-  return `${baseKey}::platinum`;
+  return `${getTierTag()}${baseKey}`;
+}
+
+// One-time migration of pre-existing local cache into the new `S_`/`P_` tagged
+// keys. Runs once per tier per browser. Standard data lived on bare keys and
+// premium on the legacy `::platinum` suffix; both are copied to their tagged
+// home so unsynced offline writes are preserved across the upgrade. Anything we
+// miss is harmless — Firebase hydration repopulates the tagged keys on load.
+const TIER_TAG_MIGRATION_MARKER = "orange-hotel-tier-tag-migration-v1";
+
+export function migrateLocalCacheToTierTags() {
+  if (typeof window === "undefined") return;
+
+  const tier = getMawioTier();
+  const markerKey = `${TIER_TAG_MIGRATION_MARKER}-${tier}`;
+  if (window.localStorage.getItem(markerKey) === "1") return;
+
+  const tag = tier === "platinum" ? "P_" : "S_";
+  const legacySuffix = tier === "platinum" ? "::platinum" : "";
+
+  for (const baseKey of TIER_SCOPED_KEYS) {
+    const legacyKey = legacySuffix ? `${baseKey}${legacySuffix}` : baseKey;
+    const taggedKey = `${tag}${baseKey}`;
+    if (legacyKey === taggedKey) continue;
+
+    try {
+      const legacyValue = window.localStorage.getItem(legacyKey);
+      if (legacyValue === null) continue;
+      // Don't clobber a tagged value that already exists (e.g. a partial prior run).
+      if (window.localStorage.getItem(taggedKey) === null) {
+        window.localStorage.setItem(taggedKey, legacyValue);
+      }
+      window.localStorage.removeItem(legacyKey);
+    } catch {
+      // Ignore quota/access errors; hydration will rebuild the tagged cache.
+    }
+  }
+
+  window.localStorage.setItem(markerKey, "1");
 }
 
 export const FIREBASE_SYNC_KEYS = [
@@ -928,6 +976,10 @@ export function syncStorageValueToFirebase<T>(key: string, value: T) {
 
 export async function hydrateStorageKeyFromFirebase(key: string) {
   if (typeof window === "undefined") return;
+
+  // Ensure any pre-existing untagged cache is moved into the S_/P_ tagged keys
+  // before we read/merge. Marker-guarded, so this is a no-op after the first run.
+  migrateLocalCacheToTierTags();
 
   const applyHydratedValue = (value: unknown) => {
     const sanitizedValue = sanitizeForStorage(sanitizeSyncedValue(key, value));

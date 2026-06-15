@@ -4,6 +4,7 @@ import {
   HardwareSettings,
   STORAGE_HARDWARE_SETTINGS,
 } from "@/app/lib/hardware-settings";
+import { getTierScopedLocalKey } from "@/app/lib/firebase-sync";
 
 interface ReceiptLine {
   name: string;
@@ -94,7 +95,7 @@ export async function listSystemPrinters() {
 function readHardwareSettings(): HardwareSettings {
   if (typeof window === "undefined") return DEFAULT_HARDWARE_SETTINGS;
 
-  const raw = localStorage.getItem(STORAGE_HARDWARE_SETTINGS);
+  const raw = localStorage.getItem(getTierScopedLocalKey(STORAGE_HARDWARE_SETTINGS));
   if (!raw) return DEFAULT_HARDWARE_SETTINGS;
 
   try {

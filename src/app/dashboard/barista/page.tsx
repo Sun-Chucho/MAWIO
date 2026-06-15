@@ -231,15 +231,77 @@ function isTotInventoryItem(item: Pick<InventoryItem, "name" | "totPerBottle">) 
   return (typeof item.totPerBottle === "number" && item.totPerBottle > 0) || /\s*\(?TOTS?\)?$/i.test(item.name);
 }
 
+// Generic descriptor/category words that should NOT be treated as a brand match
+// on their own (otherwise every "Wine" or "Lager" would match every other one).
+const GENERIC_BARISTA_TOKENS = new Set([
+  "wine", "beer", "lager", "lite", "light", "water", "whisky", "whiskey", "gin",
+  "vodka", "cider", "juice", "energy", "drink", "malt", "soda", "rum", "spirit",
+  "aperitif", "liqueur", "bottle", "btl", "can", "glass", "cup", "dry", "premium",
+  "scotch", "london", "natural", "sweet", "red", "white", "choice", "rare", "gold",
+  "blue", "mix", "ice", "nectar", "tropical", "portified", "claret", "the", "and", "of",
+]);
+
+function tokenizeBaristaName(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/\d+(?:\.\d+)?\s*(?:ml|cl|l)\b/g, " ") // strip sizes like 330ml / 1.5l
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 1 && !/^\d+$/.test(token));
+}
+
+function baristaTokensMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  // Tolerate singular/plural and abbreviation differences (Ballantine(s),
+  // Desperado(s), K-Vant, etc.) without matching unrelated short words.
+  return a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a));
+}
+
+// Premium seed rows carry no real customer selling price (selling == supplier
+// cost). Borrow the standard hotel's retail selling price for the most similarly
+// named product so the premium POS shows a sensible price out of the box; the
+// manager refines anything off in Barista Stock → Edit afterwards.
+function findStandardSeedSellingPrice(premiumName: string): number | null {
+  const target = tokenizeBaristaName(premiumName);
+  if (target.length === 0) return null;
+
+  let bestPrice: number | null = null;
+  let bestScore = 0;
+
+  for (const standard of BARISTA_INVENTORY_SEED) {
+    if (!standard.name || typeof standard.sellingPrice !== "number" || standard.sellingPrice <= 0) continue;
+    const standardTokens = Array.from(new Set(tokenizeBaristaName(standard.name)));
+
+    let shared = 0;
+    let sharedBrand = 0;
+    for (const token of standardTokens) {
+      if (target.some((targetToken) => baristaTokensMatch(targetToken, token))) {
+        shared += 1;
+        if (!GENERIC_BARISTA_TOKENS.has(token)) sharedBrand += 1;
+      }
+    }
+
+    // Require at least one distinctive (brand) token in common so we never match
+    // purely on a generic word like "wine" or "lager".
+    if (sharedBrand >= 1 && shared > bestScore) {
+      bestScore = shared;
+      bestPrice = standard.sellingPrice;
+    }
+  }
+
+  return bestPrice;
+}
+
 function buildPremiumSeedMenuItems(): BaristaMenuItem[] {
   return PREMIUM_BARISTA_INVENTORY_SEED
     .filter((item) => item.name && item.status === "ACTIVE")
     .map((item, idx) => ({
       id: `premium-seed-${idx}`,
       name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
-      // Premium seed prices are the supplier cost. They become the buying price;
-      // the manager sets the actual POS selling price in the manager Inventory tab.
-      price: item.sellingPrice ?? 0,
+      // Premium seed has no customer-facing selling price, so borrow the standard
+      // hotel's retail price for a similarly named drink. Falls back to the seed
+      // value (supplier cost) when there's no match; the manager edits it later
+      // in Barista Stock. Buying price stays the supplier cost for costing.
+      price: findStandardSeedSellingPrice(item.name ?? "") ?? item.sellingPrice ?? 0,
       buyingPrice: item.buyingPrice ?? 0,
       category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
       prepMinutes: 2,
