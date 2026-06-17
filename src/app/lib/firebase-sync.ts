@@ -14,6 +14,7 @@ const _lastSyncedAt: Record<string, number> = {};
 const _pendingLocalWrites: Record<string, { value: unknown; createdAt: number }> = {};
 const FALLBACK_POLL_INTERVAL_MS = 10000;
 const PENDING_LOCAL_WRITE_TTL_MS = 15000;
+const SERVER_SYNC_ETAG_PREFIX = "orange-hotel-server-sync-etag";
 
 function dispatchStorageUpdated(key: string) {
   if (typeof window === "undefined") return;
@@ -47,13 +48,29 @@ function markSyncHealthy(key?: string) {
 }
 
 async function fetchServerSyncedStorageValue<T>(key: string): Promise<T | null> {
+  const etagKey = `${SERVER_SYNC_ETAG_PREFIX}:${getMawioTier()}:${key}`;
+  const headers: Record<string, string> = {};
+  const cachedEtag = typeof window !== "undefined" ? window.sessionStorage.getItem(etagKey) : null;
+  if (cachedEtag) {
+    headers["If-None-Match"] = cachedEtag;
+  }
+
   const response = await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=${encodeURIComponent(getMawioTier())}`, {
     method: "GET",
-    cache: "no-store",
+    headers,
   });
+
+  if (response.status === 304) {
+    return readParsedLocalValue<T>(key);
+  }
 
   if (!response.ok) {
     throw new Error(`Server sync read failed for ${key}`);
+  }
+
+  const nextEtag = response.headers.get("ETag");
+  if (nextEtag && typeof window !== "undefined") {
+    window.sessionStorage.setItem(etagKey, nextEtag);
   }
 
   const payload = (await response.json()) as { value?: T | null };
@@ -1026,17 +1043,6 @@ export async function hydrateStorageKeyFromFirebase(key: string) {
   };
 
   try {
-    const serverValue = sanitizeForStorage(sanitizeSyncedValue(key, await fetchServerSyncedStorageValue(key).catch(() => null)));
-    if (hasUsableSyncedValue(key, serverValue)) {
-      const mergedServerValue = sanitizeForStorage(sanitizeSyncedValue(key, mergeRemoteValueForLocalApply(key, serverValue)));
-      const sanitizedServerValue = applyHydratedValue(mergedServerValue);
-      if (sanitizedServerValue !== null && !areSnapshotsEqual(serverValue, sanitizedServerValue)) {
-        await writeServerSyncedStorageValue(key, sanitizedServerValue).catch(() => undefined);
-      }
-      markSyncHealthy(key);
-      return;
-    }
-
     await ensureFirebaseAuthReady();
     const snapshot = await get(ref(firebaseDatabase, toStoragePath(key)));
     const remoteValue = snapshot.exists() ? sanitizeForStorage(sanitizeSyncedValue(key, snapshot.val())) : null;
@@ -1068,11 +1074,15 @@ export async function hydrateStorageKeyFromFirebase(key: string) {
 
     markSyncHealthy(key);
   } catch (error) {
-    console.error(`Firebase hydrate failed for ${key}`, error);
+    console.error(`Firebase direct hydrate failed for ${key}`, error);
     try {
-      const remoteValue = sanitizeForStorage(sanitizeSyncedValue(key, await fetchServerSyncedStorageValue(key)));
-      if (remoteValue !== null) {
-        applyHydratedValue(remoteValue);
+      const serverValue = sanitizeForStorage(sanitizeSyncedValue(key, await fetchServerSyncedStorageValue(key)));
+      if (hasUsableSyncedValue(key, serverValue)) {
+        const mergedServerValue = sanitizeForStorage(sanitizeSyncedValue(key, mergeRemoteValueForLocalApply(key, serverValue)));
+        const sanitizedServerValue = applyHydratedValue(mergedServerValue);
+        if (sanitizedServerValue !== null && !areSnapshotsEqual(serverValue, sanitizedServerValue)) {
+          await writeServerSyncedStorageValue(key, sanitizedServerValue).catch(() => undefined);
+        }
       }
       markSyncHealthy(key);
     } catch (serverError) {
