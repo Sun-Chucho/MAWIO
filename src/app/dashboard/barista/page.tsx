@@ -19,7 +19,7 @@ import {
 import { findStoreItemForMenuName, formatTotStatus, getMenuStockStatus, getRemainingTots, getTotLimit, isTotTrackedMenuItem, normalizeBaristaMenuItems } from "@/app/lib/barista-stock";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
 import { getActiveBaristaStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
-import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
+import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_PRICE_ALIASES } from "@/app/lib/seed-barista-data";
 import { getLocalMawioTier } from "@/app/lib/login-profiles";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -273,31 +273,6 @@ const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2
 // canonical seed price list (per tier, per browser). Custom drinks and any
 // manual price edits made after this runs are left untouched. Bump to re-apply.
 const BARISTA_MENU_PRICE_SYNC_KEY = "orange-hotel-barista-menu-price-sync-v2";
-
-const PREMIUM_BARISTA_PRICE_ALIASES: Array<{ price: number; labels: string[] }> = [
-  { price: 10000, labels: ["Captain Morgan 200ml", "Captain Morgan Gold 200ml"] },
-  { price: 10000, labels: ["Drostdy Hof 375ml", "Drostdy Hof Claret 375ml", "Drostdyhof 375mls"] },
-  { price: 10000, labels: ["Gilbeys 200ml", "Gilbeys Gin 200ml"] },
-  { price: 5000, labels: ["Heineken 330ml", "Heineken Beer Btl 330ml"] },
-  { price: 15000, labels: ["J & B 200ml", "J & B Rare 200ml", "J&B 200ml"] },
-  { price: 13000, labels: ["K-Vant 750ml", "K-vant 750mls"] },
-  { price: 18000, labels: ["Saint Anna 750ml", "Saint Anna Wine 750ml"] },
-  { price: 5000, labels: ["Savanna Dry 330ml", "Savanah Dry 330ml", "Savana Dry 330ml"] },
-  { price: 4000, labels: ["Smirnoff Ice 300ml", "Smirnoff Ice Bottle Mix 300ml"] },
-  { price: 5000, labels: ["Windhoek Lager 330ml", "Windhoek 330ml"] },
-  { price: 7000, labels: ["Zanzi 200ml", "Zanzi Cream 200ml"] },
-  { price: 2500, labels: ["Serengeti Lite 330ml"] },
-  { price: 2500, labels: ["Serengeti Lemon 330ml"] },
-  { price: 2500, labels: ["Serengeti Lager 330ml"] },
-  { price: 3000, labels: ["Serengeti Apple 330ml"] },
-  { price: 2500, labels: ["Castle Lite 330ml", "Crystal Lite 330ml"] },
-  { price: 2500, labels: ["Kilimanjaro Lager 330ml"] },
-  { price: 2500, labels: ["Safari Lager 330ml"] },
-  { price: 2000, labels: ["GSM Water 1.5L", "GSM Water 1.5 ltr"] },
-  { price: 1000, labels: ["GSM Water 500ml", "GSM Water 500mls"] },
-  { price: 2000, labels: ["Kilimanjaro Water 1.5L", "Kilimanjaro Water 1.5 ltr", "Kili Water 1.5L"] },
-  { price: 5000, labels: ["Brutal Fruit 275ml", "Brutal Fruit"] },
-];
 
 function getEquivalentBaristaTargets(label: string, scope: "standard" | "platinum") {
   const target = normalizeBaristaTarget(label);

@@ -1,5 +1,30 @@
 import { InventoryItem } from "./mock-data";
 
+export const PREMIUM_BARISTA_PRICE_ALIASES: Array<{ price: number; labels: string[] }> = [
+  { price: 10000, labels: ["Captain Morgan 200ml", "Captain Morgan Gold 200ml", "Captain Morgan"] },
+  { price: 10000, labels: ["Drostdy Hof 375ml", "Drostdy Hof Claret 375ml", "Drostdyhof 375ml", "Drostdyhof 375mls"] },
+  { price: 10000, labels: ["Gilbeys 200ml", "Gilbeys Gin 200ml", "Gilbeys 200mls"] },
+  { price: 5000, labels: ["Heineken 330ml", "Heineken Beer Btl 330ml", "Heineken 330mls"] },
+  { price: 15000, labels: ["J & B 200ml", "J & B Rare 200ml", "J&B 200ml", "J&B"] },
+  { price: 13000, labels: ["K-Vant 750ml", "K-vant 750mls"] },
+  { price: 18000, labels: ["Saint Anna 750ml", "Saint Anna Wine 750ml", "Saint anna"] },
+  { price: 5000, labels: ["Savanna Dry 330ml", "Savanah Dry 330ml", "Savana Dry 330ml", "Savana dry"] },
+  { price: 4000, labels: ["Smirnoff Ice 300ml", "Smirnoff Ice Bottle Mix 300ml", "Smirnoff ice 300mls"] },
+  { price: 5000, labels: ["Windhoek Lager 330ml", "Windhoek 330ml", "Windhoek"] },
+  { price: 7000, labels: ["Zanzi 200ml", "Zanzi Cream 200ml", "Zanzi"] },
+  { price: 2500, labels: ["Serengeti Lite 330ml", "Serengeti lite"] },
+  { price: 2500, labels: ["Serengeti Lemon 330ml", "Serengeti lemon"] },
+  { price: 2500, labels: ["Serengeti Lager 330ml", "Serengeti lager"] },
+  { price: 3000, labels: ["Serengeti Apple 330ml", "Serengeti apple"] },
+  { price: 2500, labels: ["Castle Lite 330ml", "Crystal Lite 330ml", "Castle lite"] },
+  { price: 2500, labels: ["Kilimanjaro Lager 330ml", "Kilimanjaro lager"] },
+  { price: 2500, labels: ["Safari Lager 330ml", "Safari lager"] },
+  { price: 2000, labels: ["GSM Water 1.5L", "GSM Water 1.5 ltr", "Gsm water 1.5 ltr"] },
+  { price: 1000, labels: ["GSM Water 500ml", "GSM Water 500mls", "Gsm water 500mls"] },
+  { price: 2000, labels: ["Kilimanjaro Water 1.5L", "Kilimanjaro Water 1.5 ltr", "Kili Water 1.5L", "Kilimanjaro water 1.5 ltr"] },
+  { price: 5000, labels: ["Brutal Fruit 275ml", "Brutal Fruit", "Brutal fruit"] },
+];
+
 export const BARISTA_INVENTORY_SEED: Partial<InventoryItem>[] = [
   // Spirits. buyingPrice is filled from the matching premium item where the same
   // product is supplied to both hotels (same supplier); 0 means "set in manager".

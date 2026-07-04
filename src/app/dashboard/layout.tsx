@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { SidebarNav } from "@/components/layout/sidebar-nav";
-import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
+import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_PRICE_ALIASES } from "@/app/lib/seed-barista-data";
 import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
 import { InventoryItem, Role } from "@/app/lib/mock-data";
 import { getLocalMawioTier } from "@/app/lib/login-profiles";
@@ -44,6 +44,7 @@ const BARISTA_MENU_REMOVAL_FIX_KEY = "orange-hotel-barista-menu-removal-fix-v1";
 const JACK_DANIELS_TOTS_PRICE_FIX_KEY = "orange-hotel-jack-daniels-tots-price-fix-v1";
 const STAFF_FOOD_DISHES_EXPENSE_REMOVAL_KEY = "orange-hotel-staff-food-dishes-expense-removal-v2";
 const KITCHEN_MAY_SALES_YEAR_FIX_KEY = "orange-hotel-kitchen-may-sales-year-fix-v1";
+const PREMIUM_BARISTA_PRICE_FIX_KEY = "orange-hotel-premium-barista-price-fix-v1";
 
 // One-time clean slate for the premium (platinum) hotel: its backend node
 // historically absorbed sales/bookings that belonged to the standard hotel, so
@@ -236,6 +237,189 @@ function getBaristaInventoryLabel(item: Pick<InventoryItem, "name" | "size">) {
   if (!size) return isTotItem ? `${baseName} (TOTS)` : baseName;
   if (rawName.toLowerCase().includes(size.toLowerCase())) return rawName;
   return isTotItem ? `${baseName} ${size} (TOTS)`.trim() : `${baseName} ${size}`.trim();
+}
+
+function getPremiumBaristaTargets(label: string) {
+  const target = normalizeBaristaMenuTarget(label);
+  const aliasGroup = PREMIUM_BARISTA_PRICE_ALIASES.find((group) =>
+    group.labels.some((alias) => normalizeBaristaMenuTarget(alias) === target),
+  );
+
+  if (!aliasGroup) return [target];
+  return Array.from(new Set([target, ...aliasGroup.labels.map((alias) => normalizeBaristaMenuTarget(alias))]));
+}
+
+function getPremiumBaristaPrice(label: string) {
+  const target = normalizeBaristaMenuTarget(label);
+
+  for (const group of PREMIUM_BARISTA_PRICE_ALIASES) {
+    if (group.labels.some((alias) => normalizeBaristaMenuTarget(alias) === target)) {
+      return group.price;
+    }
+  }
+
+  const seedMatch = PREMIUM_BARISTA_INVENTORY_SEED.find((item) => {
+    if (!item.name) return false;
+    return getPremiumBaristaTargets(getBaristaInventoryLabel({ name: item.name, size: item.size ?? "" })).includes(target);
+  });
+
+  return typeof seedMatch?.sellingPrice === "number" && seedMatch.sellingPrice > 0 ? seedMatch.sellingPrice : 0;
+}
+
+function getPremiumBaristaSeedLabel(item: Partial<InventoryItem>) {
+  return getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" });
+}
+
+function getPremiumBaristaSeedId(prefix: string, item: Partial<InventoryItem>, index: number) {
+  return `${prefix}-${item.barcode || normalizeStockName(getPremiumBaristaSeedLabel(item)).replace(/\s+/g, "-") || index}`;
+}
+
+function applyPremiumBaristaPriceCorrections() {
+  if (typeof window === "undefined" || getLocalMawioTier() !== "platinum") return;
+  if (localStorage.getItem(PREMIUM_BARISTA_PRICE_FIX_KEY) === "1") return;
+
+  const inventoryItems = readJson<InventoryItem[]>("orange-hotel-inventory-items") ?? [];
+  const storeItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+  const baristaSnapshot = readPosState<{ id: string }, { id: string }, { id: string; name: string; price: number; category: string; prepMinutes: number; barcode?: string }>(
+    STORAGE_BARISTA_STATE,
+    "orange-hotel-barista-orders",
+    "orange-hotel-barista-seq",
+    "orange-hotel-barista-payments",
+    "orange-hotel-barista-menu",
+    490,
+  );
+
+  const canonicalSeed = PREMIUM_BARISTA_INVENTORY_SEED.filter(
+    (item) => item.name && item.status === "ACTIVE" && typeof item.sellingPrice === "number" && item.sellingPrice > 0,
+  );
+
+  const nextMenuItems = [...baristaSnapshot.menuItems];
+  const existingMenuTargets = new Set(nextMenuItems.flatMap((item) => getPremiumBaristaTargets(item.name)));
+  let menuChanged = false;
+
+  for (let index = 0; index < nextMenuItems.length; index += 1) {
+    const price = getPremiumBaristaPrice(nextMenuItems[index].name);
+    if (price > 0 && nextMenuItems[index].price !== price) {
+      nextMenuItems[index] = { ...nextMenuItems[index], price };
+      menuChanged = true;
+    }
+  }
+
+  canonicalSeed.forEach((item, index) => {
+    const label = getPremiumBaristaSeedLabel(item);
+    const targets = getPremiumBaristaTargets(label);
+    if (targets.some((target) => existingMenuTargets.has(target))) return;
+
+    nextMenuItems.push({
+      id: getPremiumBaristaSeedId("premium-seed", item, index),
+      name: label,
+      price: item.sellingPrice ?? 0,
+      category: item.category ?? "cold",
+      prepMinutes: 2,
+      barcode: item.barcode ?? "",
+    });
+    targets.forEach((target) => existingMenuTargets.add(target));
+    menuChanged = true;
+  });
+
+  const nextInventoryItems = [...inventoryItems];
+  let inventoryChanged = false;
+  canonicalSeed.forEach((seedItem, index) => {
+    const label = getPremiumBaristaSeedLabel(seedItem);
+    const targets = getPremiumBaristaTargets(label);
+    const inventoryIndex = nextInventoryItems.findIndex((item) => {
+      const itemTargets = getPremiumBaristaTargets(getBaristaInventoryLabel(item));
+      return itemTargets.some((target) => targets.includes(target));
+    });
+
+    if (inventoryIndex >= 0) {
+      const current = nextInventoryItems[inventoryIndex];
+      const price = getPremiumBaristaPrice(getBaristaInventoryLabel(current)) || seedItem.sellingPrice || current.sellingPrice;
+      if (current.sellingPrice !== price || current.price !== price) {
+        nextInventoryItems[inventoryIndex] = {
+          ...current,
+          sellingPrice: price,
+          price,
+        };
+        inventoryChanged = true;
+      }
+      return;
+    }
+
+    nextInventoryItems.push({
+      id: getPremiumBaristaSeedId("premium-inventory", seedItem, index),
+      barcode: seedItem.barcode ?? "",
+      name: seedItem.name ?? "",
+      category: "Bar",
+      subCategory: seedItem.category ?? "Bar",
+      size: seedItem.size ?? "",
+      stock: seedItem.stock ?? 0,
+      buyingPrice: seedItem.buyingPrice ?? 0,
+      sellingPrice: seedItem.sellingPrice ?? 0,
+      price: seedItem.sellingPrice ?? 0,
+      status: seedItem.status ?? "ACTIVE",
+      minStock: seedItem.minStock ?? 0,
+      unit: seedItem.unit ?? "Bottle",
+      totSold: seedItem.totSold ?? 0,
+      totPerBottle: seedItem.totPerBottle,
+    });
+    inventoryChanged = true;
+  });
+
+  const nextStoreItems = [...storeItems];
+  let storeChanged = false;
+  canonicalSeed.forEach((seedItem, index) => {
+    const label = getPremiumBaristaSeedLabel(seedItem);
+    const targets = getPremiumBaristaTargets(label);
+    const storeIndex = nextStoreItems.findIndex((item) => {
+      if (item.lane !== "barista") return false;
+      const itemTargets = getPremiumBaristaTargets(getStoreItemLabel(item));
+      return itemTargets.some((target) => targets.includes(target));
+    });
+
+    if (storeIndex >= 0) {
+      const current = nextStoreItems[storeIndex];
+      const price = getPremiumBaristaPrice(getStoreItemLabel(current)) || seedItem.sellingPrice || current.sellingPrice || 0;
+      if (current.sellingPrice !== price) {
+        nextStoreItems[storeIndex] = {
+          ...current,
+          sellingPrice: price,
+        };
+        storeChanged = true;
+      }
+      return;
+    }
+
+    nextStoreItems.push({
+      id: getPremiumBaristaSeedId("premium-store", seedItem, index),
+      name: seedItem.name ?? "",
+      subCategory: seedItem.category ?? "Bar",
+      size: seedItem.size ?? "",
+      stock: seedItem.stock ?? 0,
+      unit: seedItem.unit ?? "Bottle",
+      minStock: seedItem.minStock ?? 0,
+      lane: "barista",
+      buyingPrice: seedItem.buyingPrice ?? 0,
+      sellingPrice: seedItem.sellingPrice ?? 0,
+      totLimit: seedItem.totPerBottle,
+      totSold: seedItem.totSold ?? 0,
+    });
+    storeChanged = true;
+  });
+
+  if (menuChanged) {
+    writePosState(STORAGE_BARISTA_STATE, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, baristaSnapshot.payments, nextMenuItems);
+  }
+
+  if (inventoryChanged) {
+    writeJson("orange-hotel-inventory-items", nextInventoryItems);
+  }
+
+  if (storeChanged) {
+    writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
+  }
+
+  localStorage.setItem(PREMIUM_BARISTA_PRICE_FIX_KEY, "1");
 }
 
 function syncBaristaMenuItemsWithSharedData(
@@ -1184,6 +1368,7 @@ export default function DashboardLayout({
           // below patches STANDARD-hotel history and must never run against
           // the platinum node.
           await runOneTimePremiumSalesCleanSlate();
+          applyPremiumBaristaPriceCorrections();
         } else {
           applyBusinessCorrections();
         }
