@@ -2,7 +2,7 @@ import { get, onValue, ref, remove, set } from "firebase/database";
 import { ensureFirebaseAuthReady, firebaseDatabase } from "@/app/lib/firebase";
 import { getStoreItemLabel, type MainStoreItem } from "@/app/lib/inventory-transfer";
 import { mergeKitchenMenuItems, type KitchenMenuItem } from "@/app/lib/kitchen-menu";
-import { ROOMS, type InventoryItem } from "@/app/lib/mock-data";
+import { getDefaultRoomsForTier, type InventoryItem } from "@/app/lib/mock-data";
 import { DEFAULT_HARDWARE_SETTINGS } from "@/app/lib/hardware-settings";
 import { sanitizeForStorage } from "@/app/lib/storage-sanitize";
 
@@ -509,7 +509,10 @@ function hasUsableSyncedValue(key: string, value: unknown) {
   }
 
   if (key === "orange-hotel-rooms-state") {
-    return Array.isArray(value) && value.length >= ROOMS.length;
+    // Compare against the ACTIVE hotel's room count. Using the standard hotel's
+    // list here made every valid platinum rooms array (20 rooms vs standard's
+    // 34) look "unusable", so hydration kept replacing it with standard rooms.
+    return Array.isArray(value) && value.length >= getDefaultRoomsForTier(getMawioTier()).length;
   }
 
   if (key === "orange-hotel-kitchen-state" || key === "orange-hotel-barista-state") {
@@ -845,7 +848,7 @@ function getCanonicalDefaultValue(key: string) {
     case "orange-hotel-barista-daily-stock-session":
       return null;
     case "orange-hotel-rooms-state":
-      return ROOMS;
+      return getDefaultRoomsForTier(getMawioTier());
     case "orange-hotel-settings":
       return {
         fullName: "Alex Rivera",
@@ -1248,6 +1251,36 @@ export function clearLocalBusinessState() {
   [...FIREBASE_SYNC_KEYS, ...LEGACY_DEMO_KEYS].forEach((key) => {
     removeLocalCache(key);
   });
+}
+
+// Runs `action` at most once per hotel tier ACROSS ALL DEVICES by recording a
+// completion marker in the tier's backend node (plus a localStorage fast-path
+// marker in the same `${markerKey}-${tier}` format older per-browser guards
+// used, so devices that already ran the action skip it). A purge guarded only
+// by localStorage re-runs on every new browser and deletes data recorded since
+// the last run — the backend marker prevents that.
+export async function runOnceForTierAcrossDevices(markerKey: string, action: () => Promise<void>) {
+  if (typeof window === "undefined") return;
+  const tier = getMawioTier();
+  const localMarker = `${markerKey}-${tier}`;
+  if (window.localStorage.getItem(localMarker) === "1") return;
+
+  try {
+    const response = await fetch(`/api/storage-sync/${encodeURIComponent(markerKey)}?tier=${encodeURIComponent(tier)}`);
+    // If the backend marker cannot be verified, do nothing — never run a
+    // destructive action blindly. The next load retries.
+    if (!response.ok) return;
+    const payload = (await response.json()) as { value?: unknown };
+    if (payload.value) {
+      window.localStorage.setItem(localMarker, "1");
+      return;
+    }
+    await action();
+    await writeServerSyncedStorageValue(markerKey, { done: true, at: Date.now() });
+    window.localStorage.setItem(localMarker, "1");
+  } catch {
+    // Leave markers unset so a later load can retry.
+  }
 }
 
 // Awaitable purge of the given keys for the CURRENT hotel tier only (local cache

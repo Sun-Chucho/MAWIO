@@ -39,12 +39,12 @@ const PLATINUM_ROOM_NUMBERS = [
 export const PREMIUM_STANDARD_ROOM_PRICE = 60000;
 export const PREMIUM_DELUXE_ROOM_PRICE = 80000;
 
-const PREMIUM_STANDARD_ROOM_NUMBERS = [
-  "301", "302", "303", "304", "305", "306", "307", "308", "309", "310"
+export const PREMIUM_STANDARD_ROOM_NUMBERS = [
+  "301", "306", "308", "313", "314", "315", "317", "318", "319", "320"
 ] as const;
 
-const PREMIUM_DELUXE_ROOM_NUMBERS = [
-  "311", "312", "313", "314", "315", "316", "317", "318", "319", "320"
+export const PREMIUM_DELUXE_ROOM_NUMBERS = [
+  "302", "303", "304", "305", "307", "309", "310", "311", "312", "316"
 ] as const;
 
 const standardRooms: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({
@@ -64,6 +64,29 @@ const platinumRooms: Room[] = PLATINUM_ROOM_NUMBERS.map((number) => ({
 }));
 
 export const ROOMS: Room[] = [...standardRooms, ...platinumRooms];
+
+// Premium (platinum) hotel rooms are a fully separate set — numbers 301-320 —
+// split into two rate classes by explicit room-number lists.
+export const PLATINUM_HOTEL_ROOMS: Room[] = [
+  ...PREMIUM_STANDARD_ROOM_NUMBERS.map((number): Room => ({
+    id: `r${number}`,
+    number,
+    type: "Standard",
+    status: "available",
+    price: PREMIUM_STANDARD_ROOM_PRICE,
+  })),
+  ...PREMIUM_DELUXE_ROOM_NUMBERS.map((number): Room => ({
+    id: `r${number}`,
+    number,
+    type: "Platinum",
+    status: "available",
+    price: PREMIUM_DELUXE_ROOM_PRICE,
+  })),
+];
+
+export function getDefaultRoomsForTier(tier: "standard" | "platinum"): Room[] {
+  return (tier === "platinum" ? PLATINUM_HOTEL_ROOMS : ROOMS).map((room) => ({ ...room }));
+}
 
 export interface InventoryItem {
   id: string;

@@ -44,7 +44,6 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Inventory', href: '/dashboard/inventory', icon: Package, roles: ['inventory'] },
   { label: 'Menu Create', href: '/dashboard/menu-create', icon: FileSpreadsheet, roles: ['manager'] },
   { label: 'Company Stock', href: '/dashboard/company-stock', icon: Building2, roles: ['manager', 'director', 'inventory'] },
-  { label: 'F&B Suite', href: '/dashboard/fnb-suite', icon: FileSpreadsheet, roles: [] },
   { label: 'F&B POS', href: '/dashboard/fnb-pos', icon: Utensils, roles: ['kitchen', 'barista'] },
   { label: 'Booking', href: '/dashboard/cashier', icon: ShoppingCart, roles: ['manager', 'director', 'cashier'] },
   { label: 'Cash Requests', href: '/dashboard/cash-requests', icon: HandCoins, roles: ['cashier'] },

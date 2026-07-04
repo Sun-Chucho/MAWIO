@@ -1,4 +1,13 @@
-import { PLATINUM_ROOM_PRICE, ROOMS, Room, STANDARD_ROOM_PRICE, PREMIUM_STANDARD_ROOM_PRICE, PREMIUM_DELUXE_ROOM_PRICE } from "@/app/lib/mock-data";
+import {
+  PLATINUM_ROOM_PRICE,
+  Room,
+  STANDARD_ROOM_PRICE,
+  PREMIUM_STANDARD_ROOM_PRICE,
+  PREMIUM_DELUXE_ROOM_PRICE,
+  PREMIUM_STANDARD_ROOM_NUMBERS,
+  PREMIUM_DELUXE_ROOM_NUMBERS,
+  getDefaultRoomsForTier,
+} from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
 import { getLocalMawioTier } from "./login-profiles";
 
@@ -18,37 +27,9 @@ function getRoomStorageKey(): string {
   return STORAGE_ROOMS;
 }
 
-function getDefaultRoomsByType(type: "Standard" | "Platinum"): Room[] {
-  return ROOMS.filter(room => room.type === type).map((room) => ({ ...room }));
-}
-
 export function getDefaultRooms(scope?: "standard" | "platinum"): Room[] {
   const activeScope = scope ?? (typeof window !== "undefined" ? getLocalMawioTier() : "standard");
-  if (activeScope === "platinum") {
-    const standardRooms: Room[] = [
-      "301", "302", "303", "304", "305", "306", "307", "308", "309", "310"
-    ].map((number) => ({
-      id: `r${number}`,
-      number,
-      type: "Standard",
-      status: "available" as Room["status"],
-      price: PREMIUM_STANDARD_ROOM_PRICE,
-    }));
-
-    const deluxeRooms: Room[] = [
-      "311", "312", "313", "314", "315", "316", "317", "318", "319", "320"
-    ].map((number) => ({
-      id: `r${number}`,
-      number,
-      type: "Platinum",
-      status: "available" as Room["status"],
-      price: PREMIUM_DELUXE_ROOM_PRICE,
-    }));
-
-    return [...standardRooms, ...deluxeRooms];
-  }
-
-  return getDefaultRoomsByType("Standard").concat(getDefaultRoomsByType("Platinum"));
+  return getDefaultRoomsForTier(activeScope);
 }
 
 function getRoomRateByType(type: Room["type"], scope: "standard" | "platinum") {
@@ -58,8 +39,24 @@ function getRoomRateByType(type: Room["type"], scope: "standard" | "platinum") {
   return type === "Standard" ? STANDARD_ROOM_PRICE : PLATINUM_ROOM_PRICE;
 }
 
+const PREMIUM_STANDARD_ROOM_SET = new Set<string>(PREMIUM_STANDARD_ROOM_NUMBERS);
+const PREMIUM_DELUXE_ROOM_SET = new Set<string>(PREMIUM_DELUXE_ROOM_NUMBERS);
+
+// Persisted platinum room lists may carry an outdated number→rate-class
+// assignment, so the type is re-derived from the room number before rates are
+// applied. Rooms outside the known premium sets (stale entries) are dropped.
 function normalizeRoomRates(rooms: Room[], scope: "standard" | "platinum"): Room[] {
-  return rooms.map((room) => {
+  const normalizedRooms =
+    scope === "platinum"
+      ? rooms
+          .filter((room) => PREMIUM_STANDARD_ROOM_SET.has(room.number) || PREMIUM_DELUXE_ROOM_SET.has(room.number))
+          .map((room) => {
+            const type: Room["type"] = PREMIUM_STANDARD_ROOM_SET.has(room.number) ? "Standard" : "Platinum";
+            return room.type === type ? room : { ...room, type };
+          })
+      : rooms;
+
+  return normalizedRooms.map((room) => {
     const price = getRoomRateByType(room.type, scope);
     return room.price === price ? room : { ...room, price };
   });
@@ -72,7 +69,14 @@ export function readRoomsState(scope?: "standard" | "platinum"): Room[] {
   if (!Array.isArray(saved) || saved.length === 0) {
     return getDefaultRooms(activeScope);
   }
-  return normalizeRoomRates(saved, activeScope);
+  const normalized = normalizeRoomRates(saved, activeScope);
+  // If normalization dropped stale rooms the persisted platinum list came from
+  // the old layout entirely — fall back to the fresh per-tier defaults.
+  if (activeScope === "platinum" && normalized.length < getDefaultRoomsForTier("platinum").length) {
+    const known = new Map(normalized.map((room) => [room.number, room]));
+    return getDefaultRoomsForTier("platinum").map((room) => known.get(room.number) ?? room);
+  }
+  return normalized;
 }
 
 function hasSavedRoomsState(): boolean {

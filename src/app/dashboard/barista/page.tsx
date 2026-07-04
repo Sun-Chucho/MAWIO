@@ -32,7 +32,7 @@ import { SyncStatusIndicator } from "@/components/sync-status-indicator";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { hydrateStorageKeyFromFirebase, purgeSyncedKeysForCurrentTier, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase, purgeSyncedKeysForCurrentTier, runOnceForTierAcrossDevices, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -231,77 +231,15 @@ function isTotInventoryItem(item: Pick<InventoryItem, "name" | "totPerBottle">) 
   return (typeof item.totPerBottle === "number" && item.totPerBottle > 0) || /\s*\(?TOTS?\)?$/i.test(item.name);
 }
 
-// Generic descriptor/category words that should NOT be treated as a brand match
-// on their own (otherwise every "Wine" or "Lager" would match every other one).
-const GENERIC_BARISTA_TOKENS = new Set([
-  "wine", "beer", "lager", "lite", "light", "water", "whisky", "whiskey", "gin",
-  "vodka", "cider", "juice", "energy", "drink", "malt", "soda", "rum", "spirit",
-  "aperitif", "liqueur", "bottle", "btl", "can", "glass", "cup", "dry", "premium",
-  "scotch", "london", "natural", "sweet", "red", "white", "choice", "rare", "gold",
-  "blue", "mix", "ice", "nectar", "tropical", "portified", "claret", "the", "and", "of",
-]);
-
-function tokenizeBaristaName(name: string): string[] {
-  return name
-    .toLowerCase()
-    .replace(/\d+(?:\.\d+)?\s*(?:ml|cl|l)\b/g, " ") // strip sizes like 330ml / 1.5l
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length > 1 && !/^\d+$/.test(token));
-}
-
-function baristaTokensMatch(a: string, b: string): boolean {
-  if (a === b) return true;
-  // Tolerate singular/plural and abbreviation differences (Ballantine(s),
-  // Desperado(s), K-Vant, etc.) without matching unrelated short words.
-  return a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a));
-}
-
-// Premium seed rows carry no real customer selling price (selling == supplier
-// cost). Borrow the standard hotel's retail selling price for the most similarly
-// named product so the premium POS shows a sensible price out of the box; the
-// manager refines anything off in Barista Stock → Edit afterwards.
-function findStandardSeedSellingPrice(premiumName: string): number | null {
-  const target = tokenizeBaristaName(premiumName);
-  if (target.length === 0) return null;
-
-  let bestPrice: number | null = null;
-  let bestScore = 0;
-
-  for (const standard of BARISTA_INVENTORY_SEED) {
-    if (!standard.name || typeof standard.sellingPrice !== "number" || standard.sellingPrice <= 0) continue;
-    const standardTokens = Array.from(new Set(tokenizeBaristaName(standard.name)));
-
-    let shared = 0;
-    let sharedBrand = 0;
-    for (const token of standardTokens) {
-      if (target.some((targetToken) => baristaTokensMatch(targetToken, token))) {
-        shared += 1;
-        if (!GENERIC_BARISTA_TOKENS.has(token)) sharedBrand += 1;
-      }
-    }
-
-    // Require at least one distinctive (brand) token in common so we never match
-    // purely on a generic word like "wine" or "lager".
-    if (sharedBrand >= 1 && shared > bestScore) {
-      bestScore = shared;
-      bestPrice = standard.sellingPrice;
-    }
-  }
-
-  return bestPrice;
-}
-
 function buildPremiumSeedMenuItems(): BaristaMenuItem[] {
   return PREMIUM_BARISTA_INVENTORY_SEED
     .filter((item) => item.name && item.status === "ACTIVE")
     .map((item, idx) => ({
       id: `premium-seed-${idx}`,
       name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
-      // Premium seed has no customer-facing selling price, so borrow the standard
-      // hotel's retail price for a similarly named drink. Falls back to the seed
-      // value (supplier cost) when there's no match; the manager edits it later
-      // in Barista Stock. Buying price stays the supplier cost for costing.
-      price: findStandardSeedSellingPrice(item.name ?? "") ?? item.sellingPrice ?? 0,
+      // Customer-facing POS price is the retail selling price; buying price is
+      // the supplier cost, kept for manager costing only.
+      price: item.sellingPrice ?? 0,
       buyingPrice: item.buyingPrice ?? 0,
       category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
       prepMinutes: 2,
@@ -330,6 +268,31 @@ function buildStandardSeedMenuItems(): BaristaMenuItem[] {
 // BARISTA_INVENTORY_SEED once per browser, so uploaded drink-list changes show
 // up even when a stale menu was already persisted.
 const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2";
+
+// One-time refresh of SELLING prices on an already-persisted menu from the
+// canonical seed price list (per tier, per browser). Custom drinks and any
+// manual price edits made after this runs are left untouched. Bump to re-apply.
+const BARISTA_MENU_PRICE_SYNC_KEY = "orange-hotel-barista-menu-price-sync-v1";
+
+function applyCanonicalSellingPrices(menuItems: BaristaMenuItem[], scope: "standard" | "platinum") {
+  const seed = scope === "platinum" ? PREMIUM_BARISTA_INVENTORY_SEED : BARISTA_INVENTORY_SEED;
+  const priceByTarget = new Map<string, number>();
+  for (const item of seed) {
+    if (!item.name || typeof item.sellingPrice !== "number" || item.sellingPrice <= 0) continue;
+    const label = getBaristaInventoryLabel({ name: item.name, size: item.size ?? "" });
+    priceByTarget.set(normalizeBaristaTarget(label), item.sellingPrice);
+  }
+
+  let changed = false;
+  const next = menuItems.map((item) => {
+    const price = priceByTarget.get(normalizeBaristaTarget(item.name));
+    if (typeof price !== "number" || price === item.price) return item;
+    changed = true;
+    return { ...item, price };
+  });
+
+  return { menuItems: next, changed };
+}
 
 // One-time, per-tier barista clean-slate marker. The suffix `-{scope}` is added
 // at runtime so the standard and premium hotels each purge their own historically
@@ -439,10 +402,11 @@ export default function BaristaPage() {
       setInventoryItems(inventory);
 
       let menuItems = snapshot.menuItems;
+      let menuMutated = false;
       if (scope === "platinum") {
         if (menuItems.length === 0) {
           menuItems = buildPremiumSeedMenuItems();
-          writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+          menuMutated = true;
         }
       } else {
         // Standard hotel: seed when empty, and force a one-time re-seed so an
@@ -451,11 +415,28 @@ export default function BaristaPage() {
           typeof window !== "undefined" && !window.localStorage.getItem(STANDARD_BARISTA_SEED_VERSION_KEY);
         if (menuItems.length === 0 || needsForcedSeed) {
           menuItems = buildStandardSeedMenuItems();
-          writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
+          menuMutated = true;
         }
         if (typeof window !== "undefined") {
           window.localStorage.setItem(STANDARD_BARISTA_SEED_VERSION_KEY, "1");
         }
+      }
+
+      // One-time selling-price refresh from the canonical seed price list, so
+      // menus persisted before a price correction stop showing stale (or
+      // supplier-cost) prices in the POS.
+      const priceSyncMarker = `${BARISTA_MENU_PRICE_SYNC_KEY}-${scope}`;
+      if (typeof window !== "undefined" && !window.localStorage.getItem(priceSyncMarker)) {
+        const priceSync = applyCanonicalSellingPrices(menuItems, scope);
+        if (priceSync.changed) {
+          menuItems = priceSync.menuItems;
+          menuMutated = true;
+        }
+        window.localStorage.setItem(priceSyncMarker, "1");
+      }
+
+      if (menuMutated) {
+        writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
       }
 
       setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
@@ -468,8 +449,7 @@ export default function BaristaPage() {
       // shared-database bug. Each tier purges only its own data (local + its own
       // Firebase node) exactly once, then reseeds below. This is what makes each
       // dashboard truly own its sales/menu with no cross-hotel conflict.
-      const resetMarker = `${BARISTA_TIER_RESET_KEY}-${scope}`;
-      if (typeof window !== "undefined" && !window.localStorage.getItem(resetMarker)) {
+      await runOnceForTierAcrossDevices(BARISTA_TIER_RESET_KEY, async () => {
         await purgeSyncedKeysForCurrentTier([
           activeBaristaKey,
           STORAGE_TICKETS,
@@ -477,9 +457,8 @@ export default function BaristaPage() {
           STORAGE_PAYMENTS,
           STORAGE_MENU,
           STORAGE_WASTE,
-        ]).catch(() => undefined);
-        window.localStorage.setItem(resetMarker, "1");
-      }
+        ]);
+      });
 
       await Promise.all([
         hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
@@ -969,9 +948,9 @@ export default function BaristaPage() {
   const recordWaste = async (item: BaristaMenuItem) => {
     if (isDirector) return;
     const approved = await confirm({
-      title: "Record Waste",
-      description: `Record 1 x ${item.name} as waste? This removes it from barista stock.`,
-      actionLabel: "Record Waste",
+      title: "Remove Waste",
+      description: `Are you sure you want to record 1 x ${item.name} as waste? This permanently removes it from barista stock.`,
+      actionLabel: "Yes, Record Waste",
     });
     if (!approved) return;
 

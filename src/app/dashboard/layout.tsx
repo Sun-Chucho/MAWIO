@@ -11,7 +11,7 @@ import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@
 import { MainStoreItem, STORAGE_MAIN_STORE_ITEMS, getStoreItemLabel, normalizeBaristaProductTarget, normalizeStockName } from "@/app/lib/inventory-transfer";
 import { getTotLimit } from "@/app/lib/barista-stock";
 import { normalizeRole } from "@/app/lib/auth";
-import { hydrateStorageKeyFromFirebase, setMawioTier } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase, purgeSyncedKeysForCurrentTier, runOnceForTierAcrossDevices, setMawioTier } from "@/app/lib/firebase-sync";
 import { readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeJson, writePosState } from "@/app/lib/storage";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, Home, Hotel, Search, User, Clock, Menu, WalletCards, ReceiptText, Package } from "lucide-react";
@@ -44,6 +44,39 @@ const BARISTA_MENU_REMOVAL_FIX_KEY = "orange-hotel-barista-menu-removal-fix-v1";
 const JACK_DANIELS_TOTS_PRICE_FIX_KEY = "orange-hotel-jack-daniels-tots-price-fix-v1";
 const STAFF_FOOD_DISHES_EXPENSE_REMOVAL_KEY = "orange-hotel-staff-food-dishes-expense-removal-v2";
 const KITCHEN_MAY_SALES_YEAR_FIX_KEY = "orange-hotel-kitchen-may-sales-year-fix-v1";
+
+// One-time clean slate for the premium (platinum) hotel: its backend node
+// historically absorbed sales/bookings that belonged to the standard hotel, so
+// the premium dashboards kept showing the other hotel's records. Runs once per
+// tier across ALL devices (backend marker) and only touches the platinum node —
+// standard hotel data is never read or written here. The premium kitchen menu
+// is preserved across the purge; only tickets/sales/bookings/rooms are reset.
+const PLATINUM_SALES_RESET_KEY = "orange-hotel-platinum-sales-reset-v1";
+
+async function runOneTimePremiumSalesCleanSlate() {
+  if (getLocalMawioTier() !== "platinum") return;
+
+  await runOnceForTierAcrossDevices(PLATINUM_SALES_RESET_KEY, async () => {
+    const kitchenSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_KITCHEN_STATE);
+    const preservedKitchenMenu = Array.isArray(kitchenSnapshot?.menuItems) ? kitchenSnapshot.menuItems : [];
+
+    await purgeSyncedKeysForCurrentTier([
+      "orange-hotel-cashier-state",
+      "orange-hotel-cashier-transactions",
+      "orange-hotel-cashier-seq",
+      STORAGE_KITCHEN_STATE,
+      "orange-hotel-kitchen-tickets",
+      "orange-hotel-kitchen-seq",
+      "orange-hotel-kitchen-payments",
+      "orange-hotel-cancelled-tickets",
+      "orange-hotel-rooms-state",
+    ]);
+
+    if (preservedKitchenMenu.length > 0) {
+      writeJson(STORAGE_KITCHEN_STATE, { tickets: [], ticketSeq: 300, payments: [], menuItems: preservedKitchenMenu });
+    }
+  });
+}
 
 const MANAGEMENT_SYNC_KEYS = [
   "orange-hotel-settings",
@@ -1146,7 +1179,14 @@ export default function DashboardLayout({
       try {
         await hydrateStartupStateForRole(savedRole);
         if (cancelled) return;
-        applyBusinessCorrections();
+        if (activeHotelScope === "platinum") {
+          // The premium hotel gets its own clean slate; the correction pass
+          // below patches STANDARD-hotel history and must never run against
+          // the platinum node.
+          await runOneTimePremiumSalesCleanSlate();
+        } else {
+          applyBusinessCorrections();
+        }
       } catch (error) {
         console.error("Dashboard hydration failed", error);
       }
