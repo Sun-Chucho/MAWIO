@@ -40,11 +40,11 @@ export const PREMIUM_STANDARD_ROOM_PRICE = 60000;
 export const PREMIUM_DELUXE_ROOM_PRICE = 80000;
 
 export const PREMIUM_STANDARD_ROOM_NUMBERS = [
-  "301", "306", "308", "313", "314", "315", "317", "318", "319", "320"
+  "301", "304", "308", "313", "314", "315", "317", "318", "319", "320"
 ] as const;
 
 export const PREMIUM_DELUXE_ROOM_NUMBERS = [
-  "302", "303", "304", "305", "307", "309", "310", "311", "312", "316"
+  "302", "303", "305", "306", "307", "309", "310", "311", "312", "316"
 ] as const;
 
 const standardRooms: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({

@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { PLATINUM_ROOM_PRICE, ROOMS, Role, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
+import {
+  PLATINUM_ROOM_PRICE,
+  PREMIUM_DELUXE_ROOM_PRICE,
+  PREMIUM_STANDARD_ROOM_PRICE,
+  Role,
+  Room,
+  STANDARD_ROOM_PRICE,
+} from "@/app/lib/mock-data";
 import { readStoredRole } from "@/app/lib/auth";
 import { readCashierState, STORAGE_CASHIER_STATE, writeCashierState, getActiveCashierStateKey } from "@/app/lib/storage";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -61,10 +68,21 @@ interface BookingRecord {
   lastExtendedAt?: number;
 }
 
-const ROOM_RATE: Record<RoomType, number> = {
-  standard: STANDARD_ROOM_PRICE,
-  platinum: PLATINUM_ROOM_PRICE,
+const ROOM_RATE: Record<"standard" | "platinum", Record<RoomType, number>> = {
+  standard: {
+    standard: STANDARD_ROOM_PRICE,
+    platinum: PLATINUM_ROOM_PRICE,
+  },
+  platinum: {
+    standard: PREMIUM_STANDARD_ROOM_PRICE,
+    platinum: PREMIUM_DELUXE_ROOM_PRICE,
+  },
 };
+
+function getFallbackRoomRate(roomType: RoomType): number {
+  const scope = typeof window === "undefined" ? "standard" : getLocalMawioTier();
+  return ROOM_RATE[scope][roomType];
+}
 
 function getRoomTypeLabel(roomType: RoomType): string {
   if (typeof window === "undefined") return roomType === "standard" ? "Standard" : "Premium";
@@ -324,11 +342,15 @@ export default function BookingPage() {
 
   const nights = useMemo(() => daysBetween(checkInDate, checkOutDate), [checkInDate, checkOutDate]);
   const packageConfig = selectedPackage === "none" ? null : SPECIAL_PACKAGES[selectedPackage];
+  const selectedRoom = useMemo(
+    () => rooms.find((room) => room.number === selectedRoomNumber) ?? null,
+    [rooms, selectedRoomNumber],
+  );
   const selectedRate = packageConfig
     ? roomType === "standard"
       ? packageConfig.standardRate
       : packageConfig.platinumRate
-    : ROOM_RATE[roomType];
+    : selectedRoom?.price ?? getFallbackRoomRate(roomType);
   const rate = Number.isFinite(selectedRate) && selectedRate > 0 ? selectedRate : 0;
   const bookingCurrency: BookingCurrency = packageConfig?.currency ?? "TSh";
   const accountingCurrency = toAccountingCurrency(bookingCurrency);
