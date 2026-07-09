@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_PRICE_ALIASES } from "@/app/lib/seed-barista-data";
 import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
-import { InventoryItem, Role } from "@/app/lib/mock-data";
+import { getDefaultRoomsForTier, InventoryItem, Role } from "@/app/lib/mock-data";
 import { getLocalMawioTier } from "@/app/lib/login-profiles";
 import { ExpenseRecord, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@/app/lib/kitchen-session-storage";
@@ -53,6 +53,94 @@ const PREMIUM_BARISTA_PRICE_FIX_KEY = "orange-hotel-premium-barista-price-fix-v1
 // standard hotel data is never read or written here. The premium kitchen menu
 // is preserved across the purge; only tickets/sales/bookings/rooms are reset.
 const PLATINUM_SALES_RESET_KEY = "orange-hotel-platinum-sales-reset-v1";
+const PLATINUM_INCOME_RESET_KEY = "orange-hotel-platinum-income-reset-v2";
+const PLATINUM_INCOME_RESET_KEYS = [
+  "orange-hotel-cashier-state",
+  "orange-hotel-cashier-transactions",
+  "orange-hotel-cashier-seq",
+  STORAGE_KITCHEN_STATE,
+  "orange-hotel-kitchen-tickets",
+  "orange-hotel-kitchen-seq",
+  "orange-hotel-kitchen-payments",
+  STORAGE_BARISTA_STATE,
+  "orange-hotel-barista-orders",
+  "orange-hotel-barista-seq",
+  "orange-hotel-barista-payments",
+  "orange-hotel-laundry-records",
+  "orange-hotel-rooms-state",
+] as const;
+
+function clearLocalPremiumIncomeResetKeys() {
+  if (typeof window === "undefined") return;
+  PLATINUM_INCOME_RESET_KEYS.forEach((key) => {
+    window.localStorage.removeItem(`P_${key}`);
+  });
+}
+
+async function readPremiumResetMarker() {
+  const response = await fetch(`/api/storage-sync/${encodeURIComponent(PLATINUM_INCOME_RESET_KEY)}?tier=platinum`, {
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const payload = (await response.json()) as { value?: unknown };
+  return payload.value;
+}
+
+async function writePremiumResetMarker() {
+  await fetch(`/api/storage-sync/${encodeURIComponent(PLATINUM_INCOME_RESET_KEY)}?tier=platinum`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: { done: true, at: Date.now() } }),
+  });
+}
+
+async function writePremiumResetValue(key: string, value: unknown) {
+  writeJson(key, value);
+  await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=platinum`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  }).catch(() => undefined);
+}
+
+async function runPremiumIncomeCleanSlate() {
+  if (typeof window === "undefined" || getLocalMawioTier() !== "platinum") return;
+
+  const localMarker = `${PLATINUM_INCOME_RESET_KEY}-platinum`;
+  if (window.localStorage.getItem(localMarker) === "1") return;
+
+  const backendMarker = await readPremiumResetMarker();
+  clearLocalPremiumIncomeResetKeys();
+
+  if (backendMarker) {
+    window.localStorage.setItem(localMarker, "1");
+    return;
+  }
+
+  const kitchenSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_KITCHEN_STATE);
+  const baristaSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_BARISTA_STATE);
+  const preservedKitchenMenu = Array.isArray(kitchenSnapshot?.menuItems) ? kitchenSnapshot.menuItems : [];
+  const preservedBaristaMenu = Array.isArray(baristaSnapshot?.menuItems) ? baristaSnapshot.menuItems : [];
+
+  await purgeSyncedKeysForCurrentTier([...PLATINUM_INCOME_RESET_KEYS]);
+  await Promise.all([
+    writePremiumResetValue("orange-hotel-cashier-state", { transactions: [], receiptSeq: 84920 }),
+    writePremiumResetValue("orange-hotel-cashier-transactions", []),
+    writePremiumResetValue("orange-hotel-cashier-seq", 84920),
+    writePremiumResetValue(STORAGE_KITCHEN_STATE, { tickets: [], ticketSeq: 300, payments: [], menuItems: preservedKitchenMenu }),
+    writePremiumResetValue("orange-hotel-kitchen-tickets", []),
+    writePremiumResetValue("orange-hotel-kitchen-seq", 300),
+    writePremiumResetValue("orange-hotel-kitchen-payments", []),
+    writePremiumResetValue(STORAGE_BARISTA_STATE, { tickets: [], ticketSeq: 490, payments: [], menuItems: preservedBaristaMenu }),
+    writePremiumResetValue("orange-hotel-barista-orders", []),
+    writePremiumResetValue("orange-hotel-barista-seq", 490),
+    writePremiumResetValue("orange-hotel-barista-payments", []),
+    writePremiumResetValue("orange-hotel-laundry-records", []),
+    writePremiumResetValue("orange-hotel-rooms-state", getDefaultRoomsForTier("platinum")),
+  ]);
+  await writePremiumResetMarker();
+  window.localStorage.setItem(localMarker, "1");
+}
 
 async function runOneTimePremiumSalesCleanSlate() {
   if (getLocalMawioTier() !== "platinum") return;
@@ -1361,6 +1449,10 @@ export default function DashboardLayout({
       setMounted(true);
 
       try {
+        if (activeHotelScope === "platinum") {
+          await runPremiumIncomeCleanSlate();
+          if (cancelled) return;
+        }
         await hydrateStartupStateForRole(savedRole);
         if (cancelled) return;
         if (activeHotelScope === "platinum") {
