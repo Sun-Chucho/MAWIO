@@ -26,7 +26,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SyncStatusIndicator } from "@/components/sync-status-indicator";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
@@ -1732,103 +1732,106 @@ export default function BaristaPage() {
             <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
             <TabsTrigger value="drinks" className="font-black uppercase text-[10px] tracking-widest">Drinks</TabsTrigger>
           </TabsList>
-        </Tabs>
-        {managerTab === "drinks" ? renderDrinksManager() : managerTab === "finance" ? renderFinanceTable() : managerTab === "sales" ? renderDirectorSalesTable() : (
-          <Card className="border-none shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory & Pricing</CardTitle>
-              <CardDescription>
-                Buying price is the supplier cost (used only for costing). Selling price is what the POS charges. Edit either field and click away to save.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader className="bg-muted/10">
-                  <TableRow>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Quantity</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Buying Price (Cost)</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price (POS)</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {baristaManagerPricingRows.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell className="font-bold">{item.name}</TableCell>
-                      <TableCell className="font-bold">
-                        <div className="flex items-center gap-1">
-                          <Input
-                            type="number"
-                            min="0"
-                            defaultValue={item.stock}
-                            className="h-9 w-20"
-                            onBlur={(event) => {
-                              const value = parseInt(event.target.value, 10);
-                              if (!Number.isFinite(value) || value < 0) return;
-                              if (value === item.stock) return;
-                              updateBaristaItemStock(
-                                { name: item.name, category: item.category, buyingPrice: item.buyingPrice, sellingPrice: item.sellingPrice },
-                                value,
-                              );
-                            }}
-                          />
-                          {item.unit ? (
-                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{item.unit}</span>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-bold">{item.quantitySold}</TableCell>
-                      <TableCell className="font-bold">
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
-                          <Input
-                            type="number"
-                            min="0"
-                            defaultValue={item.buyingPrice > 0 ? item.buyingPrice : ""}
-                            placeholder="0"
-                            className="h-9 w-28"
-                            onBlur={(event) => {
-                              const value = parseFloat(event.target.value);
-                              if (!Number.isFinite(value) || value < 0) return;
-                              if (value === item.buyingPrice) return;
-                              updateBaristaItemPricing(item.name, { buyingPrice: value });
-                            }}
-                          />
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-bold">
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
-                          <Input
-                            type="number"
-                            min="0"
-                            defaultValue={item.sellingPrice > 0 ? item.sellingPrice : ""}
-                            placeholder="0"
-                            className="h-9 w-28"
-                            onBlur={(event) => {
-                              const value = parseFloat(event.target.value);
-                              if (!Number.isFinite(value) || value < 0) return;
-                              if (value === item.sellingPrice) return;
-                              updateBaristaItemPricing(item.name, { price: value });
-                            }}
-                          />
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {baristaManagerPricingRows.length === 0 && (
+          <TabsContent value="finance">{renderFinanceTable()}</TabsContent>
+          <TabsContent value="inventory">
+            <Card className="border-none shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory & Pricing</CardTitle>
+                <CardDescription>
+                  Buying price is the supplier cost (used only for costing). Selling price is what the POS charges. Edit either field and click away to save.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader className="bg-muted/10">
                     <TableRow>
-                      <TableCell colSpan={5} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
-                        No barista menu items yet
-                      </TableCell>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Quantity</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Buying Price (Cost)</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price (POS)</TableHead>
                     </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )}
+                  </TableHeader>
+                  <TableBody>
+                    {baristaManagerPricingRows.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell className="font-bold">{item.name}</TableCell>
+                        <TableCell className="font-bold">
+                          <div className="flex items-center gap-1">
+                            <Input
+                              type="number"
+                              min="0"
+                              defaultValue={item.stock}
+                              className="h-9 w-20"
+                              onBlur={(event) => {
+                                const value = parseInt(event.target.value, 10);
+                                if (!Number.isFinite(value) || value < 0) return;
+                                if (value === item.stock) return;
+                                updateBaristaItemStock(
+                                  { name: item.name, category: item.category, buyingPrice: item.buyingPrice, sellingPrice: item.sellingPrice },
+                                  value,
+                                );
+                              }}
+                            />
+                            {item.unit ? (
+                              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{item.unit}</span>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-bold">{item.quantitySold}</TableCell>
+                        <TableCell className="font-bold">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
+                            <Input
+                              type="number"
+                              min="0"
+                              defaultValue={item.buyingPrice > 0 ? item.buyingPrice : ""}
+                              placeholder="0"
+                              className="h-9 w-28"
+                              onBlur={(event) => {
+                                const value = parseFloat(event.target.value);
+                                if (!Number.isFinite(value) || value < 0) return;
+                                if (value === item.buyingPrice) return;
+                                updateBaristaItemPricing(item.name, { buyingPrice: value });
+                              }}
+                            />
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-bold">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TSh</span>
+                            <Input
+                              type="number"
+                              min="0"
+                              defaultValue={item.sellingPrice > 0 ? item.sellingPrice : ""}
+                              placeholder="0"
+                              className="h-9 w-28"
+                              onBlur={(event) => {
+                                const value = parseFloat(event.target.value);
+                                if (!Number.isFinite(value) || value < 0) return;
+                                if (value === item.sellingPrice) return;
+                                updateBaristaItemPricing(item.name, { price: value });
+                              }}
+                            />
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {baristaManagerPricingRows.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                          No barista menu items yet
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="sales">{renderDirectorSalesTable()}</TabsContent>
+          <TabsContent value="drinks">{renderDrinksManager()}</TabsContent>
+        </Tabs>
       </div>
     );
   }
@@ -1882,101 +1885,57 @@ export default function BaristaPage() {
             <TabsTrigger value="sales" className="font-black uppercase text-[10px] tracking-widest">Sales</TabsTrigger>
             <TabsTrigger value="purchases" className="font-black uppercase text-[10px] tracking-widest">Purchases</TabsTrigger>
           </TabsList>
-        </Tabs>
-
-        {directorTab === "inventory" ? (
-          <Card className="border-none shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory from Store</CardTitle>
-              <CardDescription>Store additions plus received, used, and remaining quantities</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader className="bg-muted/10">
-                  <TableRow>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Store Qty</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Revenue</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Profit/Loss</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Tot Status</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Received</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Used</TableHead>
-                    <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Remaining</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {baristaInventoryRows.map((item) => {
-                    const itemEntries = fromStoreEntries.filter((entry) => entry.itemName === item.name);
-                    const received = itemEntries.reduce((sum, entry) => sum + entry.convertedQty, 0);
-                    const used = itemEntries.reduce((sum, entry) => sum + getUsedQty(entry.id), 0);
-                    const remaining = Math.max(0, received - used);
-                    return (
-                      <TableRow key={item.id}>
-                        <TableCell className="font-bold">{item.displayName}</TableCell>
-                        <TableCell className="font-bold">{item.stock} {item.unit}</TableCell>
-                        <TableCell className="font-bold">{item.quantitySold}</TableCell>
-                        <TableCell className="font-bold">
-                          {item.sellingPrice > 0 ? `TSh ${item.sellingPrice.toLocaleString()}` : "-"}
-                        </TableCell>
-                        <TableCell className="font-bold">TSh {item.revenue.toLocaleString()}</TableCell>
-                        <TableCell className={`font-bold ${item.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          TSh {item.profitLoss.toLocaleString()}
-                        </TableCell>
-                        <TableCell className="font-bold">{formatTotStatus(item)}</TableCell>
-                        <TableCell className="font-bold">{received} units</TableCell>
-                        <TableCell className="font-bold">{used} units</TableCell>
-                        <TableCell className="font-bold">{remaining} units</TableCell>
-                      </TableRow>
-                    );
-                  })}
-                  {baristaStoreItems.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={10} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
-                        No inventory records
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        ) : directorTab === "finance" ? (
-          <div className="space-y-6">
-            {renderFinanceTable()}
+          <TabsContent value="inventory">
             <Card className="border-none shadow-sm">
               <CardHeader>
-                <CardTitle className="text-xl font-black uppercase tracking-tight">Payment Records</CardTitle>
-                <CardDescription>Completed and credit sales records from barista settlements</CardDescription>
+                <CardTitle className="text-xl font-black uppercase tracking-tight">Barista Inventory from Store</CardTitle>
+                <CardDescription>Store additions plus received, used, and remaining quantities</CardDescription>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
                   <TableHeader className="bg-muted/10">
                     <TableRow>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Code</TableHead>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Destination</TableHead>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Status</TableHead>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Method</TableHead>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Amount</TableHead>
-                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Date</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Item</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Store Qty</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Qty Sold</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Selling Price</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Revenue</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Profit/Loss</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Tot Status</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Received</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Used</TableHead>
+                      <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Remaining</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {baristaPayments.map((payment) => (
-                      <TableRow key={payment.id}>
-                        <TableCell className="font-black">{payment.code}</TableCell>
-                        <TableCell className="font-bold">{payment.destination}</TableCell>
-                        <TableCell className="font-black uppercase text-[10px] tracking-widest">{payment.status}</TableCell>
-                        <TableCell className="font-black uppercase text-[10px] tracking-widest">{payment.method}</TableCell>
-                        <TableCell className="font-bold">TSh {payment.total.toLocaleString()}</TableCell>
-                        <TableCell className="font-bold text-sm">{new Date(payment.createdAt).toLocaleString()}</TableCell>
-                      </TableRow>
-                    ))}
-                    {baristaPayments.length === 0 && (
+                    {baristaInventoryRows.map((item) => {
+                      const itemEntries = fromStoreEntries.filter((entry) => entry.itemName === item.name);
+                      const received = itemEntries.reduce((sum, entry) => sum + entry.convertedQty, 0);
+                      const used = itemEntries.reduce((sum, entry) => sum + getUsedQty(entry.id), 0);
+                      const remaining = Math.max(0, received - used);
+                      return (
+                        <TableRow key={item.id}>
+                          <TableCell className="font-bold">{item.displayName}</TableCell>
+                          <TableCell className="font-bold">{item.stock} {item.unit}</TableCell>
+                          <TableCell className="font-bold">{item.quantitySold}</TableCell>
+                          <TableCell className="font-bold">
+                            {item.sellingPrice > 0 ? `TSh ${item.sellingPrice.toLocaleString()}` : "-"}
+                          </TableCell>
+                          <TableCell className="font-bold">TSh {item.revenue.toLocaleString()}</TableCell>
+                          <TableCell className={`font-bold ${item.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            TSh {item.profitLoss.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="font-bold">{formatTotStatus(item)}</TableCell>
+                          <TableCell className="font-bold">{received} units</TableCell>
+                          <TableCell className="font-bold">{used} units</TableCell>
+                          <TableCell className="font-bold">{remaining} units</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {baristaStoreItems.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
-                          No sales records
+                        <TableCell colSpan={10} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                          No inventory records
                         </TableCell>
                       </TableRow>
                     )}
@@ -1984,12 +1943,56 @@ export default function BaristaPage() {
                 </Table>
               </CardContent>
             </Card>
-          </div>
-        ) : directorTab === "sales" ? (
-          renderDirectorSalesTable()
-        ) : (
-          <KitchenSessionManager isDirector department="barista" visibleTabs={["purchase"]} />
-        )}
+          </TabsContent>
+          <TabsContent value="finance">
+            <div className="space-y-6">
+              {renderFinanceTable()}
+              <Card className="border-none shadow-sm">
+                <CardHeader>
+                  <CardTitle className="text-xl font-black uppercase tracking-tight">Payment Records</CardTitle>
+                  <CardDescription>Completed and credit sales records from barista settlements</CardDescription>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader className="bg-muted/10">
+                      <TableRow>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Code</TableHead>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Destination</TableHead>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Status</TableHead>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Method</TableHead>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Amount</TableHead>
+                        <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Date</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {baristaPayments.map((payment) => (
+                        <TableRow key={payment.id}>
+                          <TableCell className="font-black">{payment.code}</TableCell>
+                          <TableCell className="font-bold">{payment.destination}</TableCell>
+                          <TableCell className="font-black uppercase text-[10px] tracking-widest">{payment.status}</TableCell>
+                          <TableCell className="font-black uppercase text-[10px] tracking-widest">{payment.method}</TableCell>
+                          <TableCell className="font-bold">TSh {payment.total.toLocaleString()}</TableCell>
+                          <TableCell className="font-bold text-sm">{new Date(payment.createdAt).toLocaleString()}</TableCell>
+                        </TableRow>
+                      ))}
+                      {baristaPayments.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={6} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                            No sales records
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+          <TabsContent value="sales">{renderDirectorSalesTable()}</TabsContent>
+          <TabsContent value="purchases">
+            <KitchenSessionManager isDirector department="barista" visibleTabs={["purchase"]} />
+          </TabsContent>
+        </Tabs>
       </div>
     );
   }
