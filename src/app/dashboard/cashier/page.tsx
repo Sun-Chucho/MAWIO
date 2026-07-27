@@ -10,7 +10,7 @@ import {
   STANDARD_ROOM_PRICE,
 } from "@/app/lib/mock-data";
 import { readStoredRole } from "@/app/lib/auth";
-import { readCashierState, STORAGE_CASHIER_STATE, writeCashierState, getActiveCashierStateKey } from "@/app/lib/storage";
+import { readCashierState, writeCashierState, getActiveCashierStateKey, getScopedStorageKey } from "@/app/lib/storage";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +29,6 @@ import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { isBookingStillActive, readRoomsState, syncRoomsStateFromBookings, updateRoomStatusByNumber } from "@/app/lib/rooms-storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
-import { getScopedStorageKey } from "@/app/lib/storage";
 import { getLocalMawioTier } from "@/app/lib/login-profiles";
 
 type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
@@ -119,72 +118,6 @@ const USD_TO_TSH_RATE = 2500;
 
 const STORAGE_TX = "orange-hotel-cashier-transactions";
 const STORAGE_SEQ = "orange-hotel-cashier-seq";
-
-function mergeCashierSnapshots(
-  localSnapshot: { transactions: BookingRecord[]; receiptSeq: number },
-  remoteSnapshot: { transactions?: BookingRecord[]; receiptSeq?: number },
-) {
-  const remoteTransactions = Array.isArray(remoteSnapshot.transactions) ? remoteSnapshot.transactions : [];
-  const mergedById = new Map<string, BookingRecord>();
-  const transactionsWithoutId: BookingRecord[] = [];
-
-  for (const transaction of remoteTransactions) {
-    if (transaction.id) {
-      mergedById.set(transaction.id, transaction);
-    } else {
-      transactionsWithoutId.push(transaction);
-    }
-  }
-
-  for (const transaction of localSnapshot.transactions) {
-    if (transaction.id) {
-      mergedById.set(transaction.id, transaction);
-    } else {
-      transactionsWithoutId.push(transaction);
-    }
-  }
-
-  return {
-    transactions: [...Array.from(mergedById.values()), ...transactionsWithoutId].sort(
-      (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
-    ),
-    receiptSeq: Math.max(
-      Number.isFinite(localSnapshot.receiptSeq) ? localSnapshot.receiptSeq : 84920,
-      Number.isFinite(remoteSnapshot.receiptSeq) ? Number(remoteSnapshot.receiptSeq) : 84920,
-    ),
-  };
-}
-
-async function hydrateCashierStateFromServer() {
-  if (typeof window === "undefined") return;
-
-  const { getActiveCashierStateKey: getKey } = await import("@/app/lib/storage");
-  const activeKey = getKey();
-  const response = await fetch(`/api/storage-sync/${encodeURIComponent(activeKey)}`, {
-    cache: "no-store",
-  });
-  if (!response.ok) return;
-
-  const payload = (await response.json()) as { value?: { transactions?: BookingRecord[]; receiptSeq?: number } | null };
-  const remoteSnapshot = payload.value;
-  if (!remoteSnapshot || !Array.isArray(remoteSnapshot.transactions)) return;
-
-  const localSnapshot = readCashierState<BookingRecord>(STORAGE_TX, STORAGE_SEQ, 84920);
-  const mergedSnapshot = mergeCashierSnapshots(localSnapshot, remoteSnapshot);
-
-  localStorage.setItem(activeKey, JSON.stringify(mergedSnapshot));
-  localStorage.setItem(STORAGE_TX, JSON.stringify(mergedSnapshot.transactions));
-  localStorage.setItem(STORAGE_SEQ, String(mergedSnapshot.receiptSeq));
-  window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key: activeKey } }));
-
-  if (JSON.stringify(mergedSnapshot) !== JSON.stringify(remoteSnapshot)) {
-    await fetch(`/api/storage-sync/${encodeURIComponent(activeKey)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value: mergedSnapshot }),
-    }).catch(() => undefined);
-  }
-}
 
 function daysBetween(checkIn: string, checkOut: string): number {
   if (!checkIn || !checkOut) return 0;
@@ -309,10 +242,7 @@ export default function BookingPage() {
     };
 
     const activeCashierKey = getActiveCashierStateKey();
-    void Promise.all([
-      hydrateStorageKeyFromFirebase(activeCashierKey).catch(() => undefined),
-      hydrateCashierStateFromServer().catch(() => undefined),
-    ]).finally(() => {
+    void hydrateStorageKeyFromFirebase(activeCashierKey).catch(() => undefined).finally(() => {
       applyCashierSnapshot();
     });
 

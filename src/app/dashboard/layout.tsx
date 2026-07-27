@@ -1642,10 +1642,14 @@ export default function DashboardLayout({
                   onClick={() => {
                     const nextHotel: "standard" | "platinum" = currentHotelView === "standard" ? "platinum" : "standard";
                     if (typeof window !== "undefined") {
-                      // Rebind the per-tab tier lock, then reload so every page
-                      // effect/subscription re-initializes against the new hotel.
+                      // Rebind the per-tab tier lock and replace the tier in the
+                      // URL before reloading. The URL is the highest-priority
+                      // tier signal, so reloading the old query would otherwise
+                      // immediately switch the director back to the old hotel.
                       setMawioTier(nextHotel);
-                      window.location.reload();
+                      const nextUrl = new URL(window.location.href);
+                      nextUrl.searchParams.set("tier", nextHotel);
+                      window.location.assign(nextUrl.toString());
                     }
                   }}
                   className={cn(

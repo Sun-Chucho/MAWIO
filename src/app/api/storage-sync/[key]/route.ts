@@ -18,7 +18,17 @@ function decodeStorageKey(rawKey: string) {
 function getRequestTier(request: NextRequest) {
   const queryTier = request.nextUrl.searchParams.get("tier");
   const headerTier = request.headers.get("x-mawio-tier");
-  return queryTier === "platinum" || headerTier === "platinum" ? "platinum" : "standard";
+  const requestedTier = queryTier ?? headerTier;
+
+  if (queryTier && headerTier && queryTier !== headerTier) return null;
+  return requestedTier === "standard" || requestedTier === "platinum" ? requestedTier : null;
+}
+
+function missingTierResponse() {
+  return NextResponse.json(
+    { error: "A valid hotel tier (standard or platinum) is required." },
+    { status: 400, headers: { "Cache-Control": "no-store" } },
+  );
 }
 
 function createStorageEtag(value: unknown) {
@@ -165,8 +175,11 @@ function protectIncomingSyncedValue(key: string, incomingValue: unknown, current
 
 export async function GET(request: NextRequest, context: RouteContext) {
   try {
+    const tier = getRequestTier(request);
+    if (!tier) return missingTierResponse();
+
     const { key } = await context.params;
-    const value = await readServerSyncedStorageValue(decodeStorageKey(key), { tier: getRequestTier(request) });
+    const value = await readServerSyncedStorageValue(decodeStorageKey(key), { tier });
     const etag = createStorageEtag(value);
 
     if (request.headers.get("if-none-match") === etag) {
@@ -187,10 +200,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
 export async function PUT(request: NextRequest, context: RouteContext) {
   try {
+    const tier = getRequestTier(request);
+    if (!tier) return missingTierResponse();
+
     const { key } = await context.params;
     const decodedKey = decodeStorageKey(key);
     const body = (await request.json()) as { value?: unknown };
-    const tier = getRequestTier(request);
     const currentValue = await readServerSyncedStorageValue(decodedKey, { tier }).catch(() => null);
     const nextValue = protectIncomingSyncedValue(decodedKey, body.value ?? null, currentValue);
     await writeServerSyncedStorageValue(decodedKey, nextValue, { tier });
@@ -205,8 +220,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
+    const tier = getRequestTier(request);
+    if (!tier) return missingTierResponse();
+
     const { key } = await context.params;
-    await writeServerSyncedStorageValue(decodeStorageKey(key), null, { tier: getRequestTier(request) });
+    await writeServerSyncedStorageValue(decodeStorageKey(key), null, { tier });
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json(
