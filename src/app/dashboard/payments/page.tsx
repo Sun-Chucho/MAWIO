@@ -17,7 +17,7 @@ import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 
 type PaymentsTab = "reception" | "kitchen" | "barista";
 type PaymentDateFilter = "all" | "date";
-type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
+type PaymentMethod = "cash" | "card" | "mobile-money" | "credit" | "staff";
 type KitchenPaymentMethod = "cash" | "card" | "mobile" | "credit";
 type BaristaPaymentMethod = "cash" | "card" | "mobile" | "credit";
 type TransactionStatus = "completed" | "credit" | "checked-out";
@@ -153,6 +153,7 @@ function getBookingPaymentLabel(tx: BookingRecord) {
   if (tx.payment === "credit") {
     return tx.status === "credit" ? "pending" : "unassigned";
   }
+  if (tx.payment === "staff") return "staff (no charge)";
   return tx.payment;
 }
 

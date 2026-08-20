@@ -23,7 +23,7 @@ import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { isBookingStillActive, readRoomsState, syncRoomsStateFromBookings, updateRoomStatusByNumber } from "@/app/lib/rooms-storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 
-type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
+type PaymentMethod = "cash" | "card" | "mobile-money" | "credit" | "staff";
 type TransactionTab = "completed" | "credit";
 type BookingDateFilter = "all" | "day" | "week" | "month";
 type RoomType = "standard" | "platinum";
@@ -32,7 +32,8 @@ type BookingCurrency = "TSh" | "$";
 type SpecialPackage =
   | "resident-with-breakfast"
   | "non-resident-with-breakfast"
-  | "ninety-day-special";
+  | "ninety-day-special"
+  | "staff";
 
 interface BookingRecord {
   id: string;
@@ -88,6 +89,12 @@ const SPECIAL_PACKAGES: Record<
     currency: "TSh",
     standardRate: STANDARD_ROOM_PRICE,
     premiumRate: PREMIUM_ROOM_PRICE,
+  },
+  staff: {
+    label: "Staff",
+    currency: "TSh",
+    standardRate: 0,
+    premiumRate: 0,
   },
 };
 
@@ -531,6 +538,19 @@ export default function BookingPage() {
   const openSettlementPopup = () => {
     if (isDirector) return;
     if (!canSubmitBooking) return;
+    if (selectedPackage === "staff") {
+      void (async () => {
+        const approved = await confirm({
+          title: "Complete Staff Booking",
+          description: `Confirm the no-charge Staff package for room ${selectedRoomNumber} and ${guestName.trim()}.`,
+          actionLabel: "Complete Booking",
+        });
+        if (!approved) return;
+        saveBooking("completed", "staff");
+        redirectToBookedRooms("completed");
+      })();
+      return;
+    }
     setShowPayNowPopup(false);
     setShowSettlementPopup(true);
   };
@@ -594,6 +614,11 @@ export default function BookingPage() {
       actionLabel: "Extend Stay",
     });
     if (!approved) return;
+
+    if (booking.specialPackage === "staff") {
+      applyExtendStay("staff");
+      return;
+    }
 
     setShowExtendPaymentPopup(true);
   };
@@ -758,6 +783,7 @@ export default function BookingPage() {
               <option value="resident-with-breakfast">Resident with Breakfast (Standard TSh 20,000 | Premium TSh 30,000)</option>
               <option value="non-resident-with-breakfast">Non Resident with Breakfast (Standard $60 | Premium $90)</option>
               <option value="ninety-day-special">90 Day Special Package (Standard TSh 20,000 | Premium TSh 30,000)</option>
+              <option value="staff">Staff (No Charge — TSh 0)</option>
             </select>
 
             {packageConfig && (
@@ -831,7 +857,7 @@ export default function BookingPage() {
               disabled={!canSubmitBooking}
               className="h-11 font-black uppercase text-[10px] tracking-widest"
             >
-              {editingBookingId ? "Update Booking" : "Complete Booking"}
+              {selectedPackage === "staff" ? "Complete Staff Booking" : editingBookingId ? "Update Booking" : "Complete Booking"}
             </Button>
           </div>
         </CardContent>
