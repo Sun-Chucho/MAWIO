@@ -6,7 +6,10 @@
       "standard": {
         "current": {
           ".read": true,
-          ".write": true
+          ".write": true,
+          "orange-hotel-barista-state": {
+            ".validate": "newData.hasChildren(['catalogRevision', 'queueResetAt']) && newData.child('catalogRevision').isNumber() && newData.child('queueResetAt').isNumber() && (!data.exists() || (newData.child('catalogRevision').val() >= data.child('catalogRevision').val() && newData.child('queueResetAt').val() >= data.child('queueResetAt').val()))"
+          }
         }
       }
     }
