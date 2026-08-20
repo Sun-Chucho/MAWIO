@@ -12,7 +12,9 @@ let _firebaseRealtimeConnected = false;
 const _connectionListeners = new Set<(connected: boolean) => void>();
 const _lastSyncedAt: Record<string, number> = {};
 const _pendingLocalWrites: Record<string, { value: unknown; createdAt: number }> = {};
-const FALLBACK_POLL_INTERVAL_MS = 10000;
+// Server polling is only a fallback when the realtime Firebase connection is
+// unavailable. Keep it conservative to avoid unnecessary API/CDN traffic.
+const FALLBACK_POLL_INTERVAL_MS = 60000;
 const PENDING_LOCAL_WRITE_TTL_MS = 15000;
 const SERVER_SYNC_ETAG_PREFIX = "orange-hotel-server-sync-etag";
 
@@ -942,7 +944,6 @@ export async function hydrateStorageKeyFromFirebase(key: string) {
 
     if (!areSnapshotsEqual(remoteValue, sanitizedPreferredValue)) {
       await set(ref(firebaseDatabase, toStoragePath(key)), sanitizedPreferredValue);
-      await writeServerSyncedStorageValue(key, sanitizedPreferredValue).catch(() => undefined);
     }
 
     markSyncHealthy(key);
@@ -1072,7 +1073,6 @@ export function subscribeToSyncedStorageKey<T>(key: string, onChange: (value: T 
           readSnapshotValue<T>(key, mergedValue as T, onChange);
           if (!areSnapshotsEqual(nextValue, mergedValue)) {
             void set(ref(firebaseDatabase, toStoragePath(key)), mergedValue).catch(() => undefined);
-            void writeServerSyncedStorageValue(key, mergedValue).catch(() => undefined);
           }
           markSyncHealthy(key);
           stopFallbackPolling();

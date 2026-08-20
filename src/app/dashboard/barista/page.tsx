@@ -31,6 +31,7 @@ import { SyncStatusIndicator } from "@/components/sync-status-indicator";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
+import { toast } from "@/hooks/use-toast";
 import { hydrateStorageKeyFromFirebase, purgeSyncedKeys, runOnceAcrossDevices, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
@@ -101,6 +102,8 @@ interface PendingOrder {
   lines: BaristaOrderLine[];
   total: number;
   createdAt: number;
+  isPastBooking: boolean;
+  paymentMethod?: BaristaPaymentMethod;
 }
 
 const BARISTA_MENU: BaristaMenuItem[] = [];
@@ -330,6 +333,7 @@ export default function BaristaPage() {
   const [bookingEntryMode, setBookingEntryMode] = useState<BookingEntryMode>("current");
   const [pastBookingDate, setPastBookingDate] = useState(getLocalDateValue);
   const [pastBookingTime, setPastBookingTime] = useState(() => new Date().toTimeString().slice(0, 5));
+  const [pastPaymentMethod, setPastPaymentMethod] = useState<BaristaPaymentMethod>("cash");
   const [searchTerm, setSearchTerm] = useState("");
   const [tableNumber, setTableNumber] = useState("");
   const [roomNumber, setRoomNumber] = useState("");
@@ -1333,6 +1337,8 @@ export default function BaristaPage() {
         lines: cart.map((line) => ({ name: line.item.name, qty: line.qty })),
         total: subtotal,
         createdAt: bookingTimestamp,
+        isPastBooking: bookingEntryMode === "past",
+        paymentMethod: bookingEntryMode === "past" ? pastPaymentMethod : undefined,
       });
       setShowPayNowPopup(false);
       setShowSettlementPopup(true);
@@ -1342,10 +1348,12 @@ export default function BaristaPage() {
     if (isDirector) return;
     if (!pendingOrder) return;
 
-    const stockResult = updateBaristaStoreStock(pendingOrder.lines, "consume");
-    if (!stockResult.ok) {
-      window.alert(stockResult.error);
-      return;
+    if (!pendingOrder.isPastBooking) {
+      const stockResult = updateBaristaStoreStock(pendingOrder.lines, "consume");
+      if (!stockResult.ok) {
+        window.alert(stockResult.error);
+        return;
+      }
     }
 
     const nextSeq = ticketSeq + 1;
@@ -1379,7 +1387,7 @@ export default function BaristaPage() {
       lines: pendingOrder.lines,
     };
 
-    const nextTickets = [ticket, ...tickets];
+    const nextTickets = pendingOrder.isPastBooking ? tickets : [ticket, ...tickets];
     const nextPayments = [paymentRecord, ...baristaPayments];
     setTickets(nextTickets);
     setBaristaPayments(nextPayments);
@@ -1389,6 +1397,11 @@ export default function BaristaPage() {
     setPendingOrder(null);
     setShowSettlementPopup(false);
     setShowPayNowPopup(false);
+
+    if (pendingOrder.isPastBooking) {
+      toast({ title: "Past Barista payment recorded", description: new Date(createdAt).toLocaleString() });
+      return;
+    }
 
     const printResult = await printDepartmentReceipt({
       department: "barista",
@@ -2119,6 +2132,18 @@ export default function BaristaPage() {
                     <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Booking Time</label>
                     <Input type="time" value={pastBookingTime} onChange={(event) => setPastBookingTime(event.target.value)} />
                   </div>
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Payment Method</label>
+                    <Tabs value={pastPaymentMethod} onValueChange={(value) => setPastPaymentMethod(value as BaristaPaymentMethod)}>
+                      <TabsList className="grid h-auto w-full grid-cols-2 gap-1 bg-white/70 p-1 md:grid-cols-4">
+                        <TabsTrigger value="cash" className="font-black uppercase text-[10px] tracking-widest">Cash</TabsTrigger>
+                        <TabsTrigger value="card" className="font-black uppercase text-[10px] tracking-widest">Card</TabsTrigger>
+                        <TabsTrigger value="mobile" className="font-black uppercase text-[10px] tracking-widest">Mobile</TabsTrigger>
+                        <TabsTrigger value="credit" className="font-black uppercase text-[10px] tracking-widest">Credit</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
+                  <p className="text-xs font-bold text-amber-800 md:col-span-2">Past bookings update dated payment reports only. Current and closing stock will not change.</p>
                 </div>
               )}
               <div className="relative">
@@ -2531,11 +2556,20 @@ export default function BaristaPage() {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
           <Card className="w-full max-w-md">
             <CardHeader>
-              <CardTitle className="text-xl font-black uppercase tracking-tight">Select Settlement</CardTitle>
-              <CardDescription>Choose Pay Now or Credit</CardDescription>
+              <CardTitle className="text-xl font-black uppercase tracking-tight">{pendingOrder?.isPastBooking ? "Confirm Past Booking" : "Select Settlement"}</CardTitle>
+              <CardDescription>{pendingOrder?.isPastBooking ? `${new Date(pendingOrder.createdAt).toLocaleString()} · ${pendingOrder.paymentMethod?.toUpperCase()}` : "Choose Pay Now or Credit"}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button
+              {pendingOrder?.isPastBooking ? (
+                <Button
+                  onClick={() => finalizeOrder(pendingOrder.paymentMethod === "credit" ? "credit" : "completed", pendingOrder.paymentMethod ?? "cash")}
+                  className="w-full h-11 font-black uppercase text-[10px] tracking-widest"
+                >
+                  Record Past Payment
+                </Button>
+              ) : (
+              <>
+                <Button
                 onClick={() => {
                   setShowSettlementPopup(false);
                   setShowPayNowPopup(true);
@@ -2550,6 +2584,8 @@ export default function BaristaPage() {
               >
                 Credit
               </Button>
+              </>
+              )}
               <Button
                 variant="outline"
                 onClick={() => {

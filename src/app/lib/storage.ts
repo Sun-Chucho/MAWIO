@@ -48,8 +48,11 @@ export function readJson<T>(key: string): T | null {
 export function writeJson<T>(key: string, value: T) {
   if (typeof window === "undefined") return;
   const sanitizedValue = sanitizeForStorage(value);
+  const scopedKey = getStandardScopedLocalKey(key);
+  const serializedValue = JSON.stringify(sanitizedValue);
+  if (localStorage.getItem(scopedKey) === serializedValue) return;
   // Write only to the active Standard cache namespace.
-  localStorage.setItem(getStandardScopedLocalKey(key), JSON.stringify(sanitizedValue));
+  localStorage.setItem(scopedKey, serializedValue);
   window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key } }));
   syncStorageValueToFirebase(key, sanitizedValue);
 }

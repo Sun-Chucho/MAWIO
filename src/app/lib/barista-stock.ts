@@ -43,7 +43,7 @@ export function getRemainingTots(item: Pick<MainStoreItem, "name" | "size" | "st
   const limit = getTotLimit(item);
   if (limit <= 0) return 0;
   const sold = typeof item.totSold === "number" ? item.totSold : 0;
-  return Math.max(0, item.stock * limit + (limit - sold));
+  return Math.max(0, item.stock * limit - sold);
 }
 
 export function formatTotStatus(item: Pick<MainStoreItem, "name" | "size" | "stock" | "totLimit" | "totSold">): string {
