@@ -3,9 +3,9 @@
     ".read": false,
     ".write": false,
     "mawio": {
-      "$tier": {
-        ".read": "$tier === 'standard' || $tier === 'platinum'",
-        ".write": "$tier === 'standard' || $tier === 'platinum'"
+      "standard": {
+        ".read": true,
+        ".write": true
       }
     }
   }

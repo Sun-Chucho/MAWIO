@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readServerSyncedStorageValue, writeServerSyncedStorageValue } from "@/app/lib/firebase-server";
-import { getLoginProfilesStorageKey, normalizeLoginProfileScope, type LoginProfiles, type LoginProfileEntry, type LoginUserAccount, type LoginProfileScope } from "@/app/lib/login-profiles";
+import { STORAGE_LOGIN_PROFILES, type LoginProfiles, type LoginProfileEntry, type LoginUserAccount } from "@/app/lib/login-profiles";
 import { normalizeRole } from "@/app/lib/auth";
 
-function getStorageTier(scope: LoginProfileScope) {
-  return scope === "platinum" ? "platinum" : "standard";
-}
-
 export const runtime = "nodejs";
+const LEGACY_STANDARD_LOGIN_PROFILES = "orange-hotel-login-profiles-standard";
+
+async function readConsolidatedProfiles() {
+  const [profiles, legacyProfiles] = await Promise.all([
+    readServerSyncedStorageValue<LoginProfiles>(STORAGE_LOGIN_PROFILES),
+    readServerSyncedStorageValue<LoginProfiles>(LEGACY_STANDARD_LOGIN_PROFILES),
+  ]);
+  const consolidated = { ...(legacyProfiles ?? {}), ...(profiles ?? {}) };
+  if (legacyProfiles && JSON.stringify(consolidated) !== JSON.stringify(profiles ?? {})) {
+    await writeServerSyncedStorageValue(STORAGE_LOGIN_PROFILES, consolidated);
+  }
+  return consolidated;
+}
 
 function sanitizeEntry(entry: Partial<LoginProfileEntry> | null | undefined): LoginProfileEntry | null {
   const username = typeof entry?.username === "string" ? entry.username.trim() : "";
@@ -44,10 +53,9 @@ function sanitizeEntry(entry: Partial<LoginProfileEntry> | null | undefined): Lo
 }
 
 export async function GET(request: NextRequest) {
+  void request;
   try {
-    const scope = normalizeLoginProfileScope(request.nextUrl.searchParams.get("scope") ?? request.nextUrl.searchParams.get("tier"));
-    const storageKey = getLoginProfilesStorageKey(scope);
-    const profiles = (await readServerSyncedStorageValue<LoginProfiles>(storageKey, { tier: getStorageTier(scope) })) ?? {};
+    const profiles = await readConsolidatedProfiles();
     return NextResponse.json(profiles);
   } catch {
     return NextResponse.json({});
@@ -57,7 +65,6 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as { scope?: string; role?: string; entry?: Partial<LoginProfileEntry> };
-    const scope = normalizeLoginProfileScope(body?.scope ?? request.nextUrl.searchParams.get("scope") ?? request.nextUrl.searchParams.get("tier"));
     const role = normalizeRole(body?.role);
     const entry = sanitizeEntry(body?.entry);
 
@@ -65,14 +72,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid login profile payload." }, { status: 400 });
     }
 
-    const storageKey = getLoginProfilesStorageKey(scope);
-    const current = (await readServerSyncedStorageValue<LoginProfiles>(storageKey, { tier: getStorageTier(scope) })) ?? {};
+    const current = await readConsolidatedProfiles();
     const next: LoginProfiles = {
       ...current,
       [role]: entry,
     };
 
-    await writeServerSyncedStorageValue(storageKey, next, { tier: getStorageTier(scope) });
+    await writeServerSyncedStorageValue(STORAGE_LOGIN_PROFILES, next);
     return NextResponse.json(next);
   } catch {
     return NextResponse.json({ error: "Unable to save login profile." }, { status: 500 });

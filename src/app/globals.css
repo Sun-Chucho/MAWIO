@@ -72,22 +72,6 @@
 }
 
 @layer base {
-  /* Premium (Platinum) hotel theme. Applied on the dashboard root when the
-     active hotel tier is platinum so the premium identity (amber/gold) persists
-     across the whole dashboard, distinct from the standard hotel (blue). */
-  .tier-platinum {
-    --primary: 38 92% 50%;
-    --primary-foreground: 0 0% 100%;
-    --accent: 38 92% 95%;
-    --accent-foreground: 38 92% 40%;
-    --ring: 38 92% 50%;
-    --chart-1: 38 92% 50%;
-    --sidebar-primary: 38 92% 50%;
-    --sidebar-primary-foreground: 0 0% 10%;
-    --sidebar-accent-foreground: 38 92% 55%;
-    --sidebar-ring: 38 92% 50%;
-  }
-
   /* Standard hotel theme (blue) — explicit for clarity; matches :root defaults. */
   .tier-standard {
     --primary: 221 83% 53%;

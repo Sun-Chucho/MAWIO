@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { readStoredRole } from "@/app/lib/auth";
-import { Room, Role } from "@/app/lib/mock-data";
+import { Room } from "@/app/lib/mock-data";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,6 @@ import { readCashierState, STORAGE_CASHIER_STATE, writeCashierState } from "@/ap
 import { toast } from "@/hooks/use-toast";
 
 type StatusFilter = "all" | Room["status"];
-type TypeFilter = "all" | Room["type"];
 
 interface BookingRoomRecord {
   id: string;
@@ -36,23 +34,18 @@ interface BookingRoomRecord {
 }
 
 function getRoomTypeLabel(type: Room["type"]) {
-  return type === "Platinum" ? "Premium" : type;
+  return type;
 }
 
 export default function RoomsPage() {
   const isDirector = useIsDirector();
   const { confirm, dialog } = useConfirmDialog();
   const [rooms, setRooms] = useState<Room[]>(readRoomsState());
-  const [role, setRole] = useState<Role | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
 
   useEffect(() => {
-    const savedRole = readStoredRole();
-    setRole(savedRole);
-
     const applyRoomSnapshot = (baseRooms?: Room[]) => {
       const cashierSnapshot = readCashierState<BookingRoomRecord>(
         "orange-hotel-cashier-transactions",
@@ -85,11 +78,10 @@ export default function RoomsPage() {
         room.number.includes(searchTerm) ||
         room.type.toLowerCase().includes(normalizedSearch) ||
         getRoomTypeLabel(room.type).toLowerCase().includes(normalizedSearch);
-      const inType = typeFilter === "all" || room.type === typeFilter;
       const inStatus = statusFilter === "all" || room.status === statusFilter;
-      return inSearch && inType && inStatus;
+      return inSearch && inStatus;
     });
-  }, [rooms, searchTerm, statusFilter, typeFilter]);
+  }, [rooms, searchTerm, statusFilter]);
 
   const counts = useMemo(
     () => ({
@@ -297,14 +289,6 @@ export default function RoomsPage() {
           </div>
 
           <div className="flex flex-col gap-3">
-            <Tabs value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
-              <TabsList className="h-10">
-                <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>
-                <TabsTrigger value="Standard" className="text-[10px] font-black uppercase tracking-widest">Standard</TabsTrigger>
-                <TabsTrigger value="Platinum" className="text-[10px] font-black uppercase tracking-widest">Premium</TabsTrigger>
-              </TabsList>
-            </Tabs>
-
             <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
               <TabsList className="h-10">
                 <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>

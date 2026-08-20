@@ -23,7 +23,7 @@ type BaristaPaymentMethod = "cash" | "card" | "mobile" | "credit";
 type TransactionStatus = "completed" | "credit" | "checked-out";
 type KitchenPaymentStatus = "completed" | "credit";
 type BaristaPaymentStatus = "completed" | "credit";
-type RoomType = "standard" | "platinum";
+type RoomType = "standard";
 
 interface BookingPaymentBreakdownItem {
   method: Exclude<PaymentMethod, "credit">;

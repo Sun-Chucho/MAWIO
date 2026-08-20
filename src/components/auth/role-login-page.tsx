@@ -32,7 +32,7 @@ interface RoleLoginPageProps {
   initialHotelRole?: HotelLoginRole;
 }
 
-type LoginRole = Exclude<Role, "standard" | "platinum">;
+type LoginRole = Exclude<Role, "standard">;
 type HotelLoginRole = Exclude<LoginRole, "director">;
 
 type LoginConfig = {
@@ -93,13 +93,6 @@ const ROLE_CONFIG: Record<Role, LoginConfig> = {
     destination: "/standard",
     icon: Sun,
   },
-  platinum: {
-    label: "Platinum Hotel",
-    username: "platinum",
-    color: "bg-amber-500",
-    destination: "/platinum",
-    icon: Moon,
-  },
 };
 
 const HOTEL_ROLE_CONFIG: Record<HotelLoginRole, LoginConfig> = {
@@ -126,8 +119,8 @@ const HOTEL_ROLE_PATHS: Record<HotelLoginRole, string> = {
 
 export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginPageProps) {
   const [shift, setShift] = useState<"day" | "night">("day");
-  const isHotelTierPage = role === "standard" || role === "platinum";
-  const loginScope: LoginProfileScope = isHotelTierPage ? role : "core";
+  const isHotelTierPage = role === "standard";
+  const loginScope: LoginProfileScope = "standard";
   const [selectedRole, setSelectedRole] = useState<HotelLoginRole>(initialHotelRole);
   const activeRole: LoginRole = isHotelTierPage ? selectedRole : (role as LoginRole);
   const pageConfig = ROLE_CONFIG[role];
@@ -140,7 +133,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
   const sessionUsernameKey = getActiveSessionUsernameStorageKey(loginScope);
   const sessionRoleKey = getActiveSessionRoleStorageKey(loginScope);
   const managerSessionKey = getManagerSessionVersionStorageKey(loginScope);
-  const shiftStorageKey = loginScope === "core" ? "orange-hotel-shift" : `orange-hotel-shift-${loginScope}`;
+  const shiftStorageKey = "orange-hotel-shift";
   const storedUsername = typeof window !== "undefined" ? localStorage.getItem(sessionUsernameKey) : null;
   const [username, setUsername] = useState(storedUsername ?? roleConfig.username);
   const [password, setPassword] = useState("");
@@ -185,14 +178,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     return () => window.removeEventListener("orange-hotel-storage-updated", handleProfilesUpdated as EventListener);
   }, [activeRole, loginScope, roleConfig.username]);
 
-  // Pin the hotel tier directly into the destination URL for tier-scoped logins.
-  // `?tier=` is the highest-priority, deterministic signal getMawioTier reads, so
-  // the dashboard tab can never fall back to the browser-wide active-login-scope
-  // (which a standard session in another tab/login can overwrite) — that shared
-  // fallback is what made the premium dashboards render standard data.
-  const tierQuery =
-    loginScope === "platinum" ? "?tier=platinum" : loginScope === "standard" ? "?tier=standard" : "";
-  const loginDestination = `${roleConfig.destination}${tierQuery}`;
+  const loginDestination = roleConfig.destination;
   const fallbackLoginScript = `
 (() => {
   const formRole = ${JSON.stringify(role)};
@@ -243,7 +229,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     localStorage.setItem("orange-hotel-role", loginRole);
     localStorage.setItem("orange-hotel-username", username);
     localStorage.setItem("orange-hotel-active-login-scope", ${JSON.stringify(loginScope)});
-    localStorage.setItem("mawio-tier", ${JSON.stringify(loginScope === "platinum" ? "platinum" : "standard")});
+    localStorage.setItem("mawio-tier", "standard");
     if (loginRole === "manager") {
       localStorage.setItem(managerSessionKey, ${JSON.stringify(MANAGER_SESSION_VERSION)});
       localStorage.setItem("orange-hotel-manager-session-version", ${JSON.stringify(MANAGER_SESSION_VERSION)});
@@ -304,7 +290,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
     // Keep the hotel data tier in lock-step with the login scope so all synced
     // business data resolves to the correct hotel. Core logins (generic manager /
     // director) default to standard; the director can switch hotels afterwards.
-    localStorage.setItem("mawio-tier", loginScope === "platinum" ? "platinum" : "standard");
+    localStorage.setItem("mawio-tier", "standard");
     if (activeRole === "manager") {
       localStorage.setItem(managerSessionKey, MANAGER_SESSION_VERSION);
       localStorage.setItem("orange-hotel-manager-session-version", MANAGER_SESSION_VERSION);
@@ -340,7 +326,7 @@ export function RoleLoginPage({ role, initialHotelRole = "manager" }: RoleLoginP
   };
 
   return (
-    <div className={cn("flex min-h-[100dvh] w-full flex-col overflow-x-hidden", isDirector ? "bg-[#f4f7f2]" : role === "standard" ? "bg-blue-100" : role === "platinum" ? "bg-amber-100" : "bg-background")}>
+    <div className={cn("flex min-h-[100dvh] w-full flex-col overflow-x-hidden", isDirector ? "bg-[#f4f7f2]" : role === "standard" ? "bg-blue-100" : "bg-background")}>
       <div className={cn("flex flex-1 flex-col items-center justify-center p-4 text-center sm:p-6", isDirector && "px-3 py-4 sm:px-4 sm:py-8")}>
         <div className={cn("w-full max-w-md", isDirector && "max-w-sm", isHotelTierPage && "max-w-2xl")}>
           <form data-role-login-form={role} className={cn("border bg-white p-6 text-left shadow-sm sm:p-8", isDirector ? "rounded-xl border-black/10 p-5 shadow-xl shadow-black/5" : "rounded-2xl")} onSubmit={handleLogin}>

@@ -2,13 +2,11 @@ import { ref, runTransaction } from "firebase/database";
 import { firebaseDatabase } from "@/app/lib/firebase";
 import { readJson, writeJson } from "@/app/lib/storage";
 
-import { getMawioTier } from "@/app/lib/firebase-sync";
-
 export const STORAGE_WEBSITE_BOOKINGS = "orange-hotel-website-bookings";
 const FIREBASE_STORAGE_ROOT = "mawio";
 
 export type WebsiteBookingStatus = "new" | "seen";
-export type WebsiteRoomType = "standard" | "platinum";
+export type WebsiteRoomType = "standard";
 export type WebsiteBookingBackendSyncStatus = "synced" | "pending" | "failed";
 export type WebsiteBookingPaymentStatus = "pending" | "paid" | "failed" | "cancelled" | "not_started";
 
@@ -51,7 +49,7 @@ export function writeWebsiteBookings(bookings: WebsiteBookingRecord[]) {
 }
 
 function toStoragePath(key: string) {
-  return `${FIREBASE_STORAGE_ROOT}/${getMawioTier()}/${key.replace(/[.#$[\]/]/g, "-")}`;
+  return `${FIREBASE_STORAGE_ROOT}/standard/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
 export async function appendWebsiteBooking(booking: WebsiteBookingRecord) {

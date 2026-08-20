@@ -2,16 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { SidebarNav } from "@/components/layout/sidebar-nav";
-import { BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_INVENTORY_SEED, PREMIUM_BARISTA_PRICE_ALIASES } from "@/app/lib/seed-barista-data";
+import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
-import { getDefaultRoomsForTier, InventoryItem, Role } from "@/app/lib/mock-data";
-import { getLocalMawioTier } from "@/app/lib/login-profiles";
+import { InventoryItem, Role } from "@/app/lib/mock-data";
 import { ExpenseRecord, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@/app/lib/kitchen-session-storage";
 import { MainStoreItem, STORAGE_MAIN_STORE_ITEMS, getStoreItemLabel, normalizeBaristaProductTarget, normalizeStockName } from "@/app/lib/inventory-transfer";
 import { getTotLimit } from "@/app/lib/barista-stock";
 import { normalizeRole } from "@/app/lib/auth";
-import { hydrateStorageKeyFromFirebase, purgeSyncedKeysForCurrentTier, runOnceForTierAcrossDevices, setMawioTier } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase } from "@/app/lib/firebase-sync";
 import { readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeJson, writePosState } from "@/app/lib/storage";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, Home, Hotel, Search, User, Clock, Menu, WalletCards, ReceiptText, Package } from "lucide-react";
@@ -44,129 +43,6 @@ const BARISTA_MENU_REMOVAL_FIX_KEY = "orange-hotel-barista-menu-removal-fix-v1";
 const JACK_DANIELS_TOTS_PRICE_FIX_KEY = "orange-hotel-jack-daniels-tots-price-fix-v1";
 const STAFF_FOOD_DISHES_EXPENSE_REMOVAL_KEY = "orange-hotel-staff-food-dishes-expense-removal-v2";
 const KITCHEN_MAY_SALES_YEAR_FIX_KEY = "orange-hotel-kitchen-may-sales-year-fix-v1";
-const PREMIUM_BARISTA_PRICE_FIX_KEY = "orange-hotel-premium-barista-price-fix-v1";
-
-// One-time clean slate for the premium (platinum) hotel: its backend node
-// historically absorbed sales/bookings that belonged to the standard hotel, so
-// the premium dashboards kept showing the other hotel's records. Runs once per
-// tier across ALL devices (backend marker) and only touches the platinum node —
-// standard hotel data is never read or written here. The premium kitchen menu
-// is preserved across the purge; only tickets/sales/bookings/rooms are reset.
-const PLATINUM_SALES_RESET_KEY = "orange-hotel-platinum-sales-reset-v1";
-const PLATINUM_INCOME_RESET_KEY = "orange-hotel-platinum-income-reset-v2";
-const PLATINUM_INCOME_RESET_KEYS = [
-  "orange-hotel-cashier-state",
-  "orange-hotel-cashier-transactions",
-  "orange-hotel-cashier-seq",
-  STORAGE_KITCHEN_STATE,
-  "orange-hotel-kitchen-tickets",
-  "orange-hotel-kitchen-seq",
-  "orange-hotel-kitchen-payments",
-  STORAGE_BARISTA_STATE,
-  "orange-hotel-barista-orders",
-  "orange-hotel-barista-seq",
-  "orange-hotel-barista-payments",
-  "orange-hotel-laundry-records",
-  "orange-hotel-rooms-state",
-] as const;
-
-function clearLocalPremiumIncomeResetKeys() {
-  if (typeof window === "undefined") return;
-  PLATINUM_INCOME_RESET_KEYS.forEach((key) => {
-    window.localStorage.removeItem(`P_${key}`);
-  });
-}
-
-async function readPremiumResetMarker() {
-  const response = await fetch(`/api/storage-sync/${encodeURIComponent(PLATINUM_INCOME_RESET_KEY)}?tier=platinum`, {
-    cache: "no-store",
-  });
-  if (!response.ok) return null;
-  const payload = (await response.json()) as { value?: unknown };
-  return payload.value;
-}
-
-async function writePremiumResetMarker() {
-  await fetch(`/api/storage-sync/${encodeURIComponent(PLATINUM_INCOME_RESET_KEY)}?tier=platinum`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value: { done: true, at: Date.now() } }),
-  });
-}
-
-async function writePremiumResetValue(key: string, value: unknown) {
-  writeJson(key, value);
-  await fetch(`/api/storage-sync/${encodeURIComponent(key)}?tier=platinum`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value }),
-  }).catch(() => undefined);
-}
-
-async function runPremiumIncomeCleanSlate() {
-  if (typeof window === "undefined" || getLocalMawioTier() !== "platinum") return;
-
-  const localMarker = `${PLATINUM_INCOME_RESET_KEY}-platinum`;
-  if (window.localStorage.getItem(localMarker) === "1") return;
-
-  const backendMarker = await readPremiumResetMarker();
-  clearLocalPremiumIncomeResetKeys();
-
-  if (backendMarker) {
-    window.localStorage.setItem(localMarker, "1");
-    return;
-  }
-
-  const kitchenSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_KITCHEN_STATE);
-  const baristaSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_BARISTA_STATE);
-  const preservedKitchenMenu = Array.isArray(kitchenSnapshot?.menuItems) ? kitchenSnapshot.menuItems : [];
-  const preservedBaristaMenu = Array.isArray(baristaSnapshot?.menuItems) ? baristaSnapshot.menuItems : [];
-
-  await purgeSyncedKeysForCurrentTier([...PLATINUM_INCOME_RESET_KEYS]);
-  await Promise.all([
-    writePremiumResetValue("orange-hotel-cashier-state", { transactions: [], receiptSeq: 84920 }),
-    writePremiumResetValue("orange-hotel-cashier-transactions", []),
-    writePremiumResetValue("orange-hotel-cashier-seq", 84920),
-    writePremiumResetValue(STORAGE_KITCHEN_STATE, { tickets: [], ticketSeq: 300, payments: [], menuItems: preservedKitchenMenu }),
-    writePremiumResetValue("orange-hotel-kitchen-tickets", []),
-    writePremiumResetValue("orange-hotel-kitchen-seq", 300),
-    writePremiumResetValue("orange-hotel-kitchen-payments", []),
-    writePremiumResetValue(STORAGE_BARISTA_STATE, { tickets: [], ticketSeq: 490, payments: [], menuItems: preservedBaristaMenu }),
-    writePremiumResetValue("orange-hotel-barista-orders", []),
-    writePremiumResetValue("orange-hotel-barista-seq", 490),
-    writePremiumResetValue("orange-hotel-barista-payments", []),
-    writePremiumResetValue("orange-hotel-laundry-records", []),
-    writePremiumResetValue("orange-hotel-rooms-state", getDefaultRoomsForTier("platinum")),
-  ]);
-  await writePremiumResetMarker();
-  window.localStorage.setItem(localMarker, "1");
-}
-
-async function runOneTimePremiumSalesCleanSlate() {
-  if (getLocalMawioTier() !== "platinum") return;
-
-  await runOnceForTierAcrossDevices(PLATINUM_SALES_RESET_KEY, async () => {
-    const kitchenSnapshot = readJson<{ menuItems?: unknown[] }>(STORAGE_KITCHEN_STATE);
-    const preservedKitchenMenu = Array.isArray(kitchenSnapshot?.menuItems) ? kitchenSnapshot.menuItems : [];
-
-    await purgeSyncedKeysForCurrentTier([
-      "orange-hotel-cashier-state",
-      "orange-hotel-cashier-transactions",
-      "orange-hotel-cashier-seq",
-      STORAGE_KITCHEN_STATE,
-      "orange-hotel-kitchen-tickets",
-      "orange-hotel-kitchen-seq",
-      "orange-hotel-kitchen-payments",
-      "orange-hotel-cancelled-tickets",
-      "orange-hotel-rooms-state",
-    ]);
-
-    if (preservedKitchenMenu.length > 0) {
-      writeJson(STORAGE_KITCHEN_STATE, { tickets: [], ticketSeq: 300, payments: [], menuItems: preservedKitchenMenu });
-    }
-  });
-}
-
 const MANAGEMENT_SYNC_KEYS = [
   "orange-hotel-settings",
   "orange-hotel-login-profiles",
@@ -197,7 +73,6 @@ const STARTUP_SYNC_KEYS_BY_ROLE: Record<Role, string[]> = {
   kitchen: ["orange-hotel-settings", "orange-hotel-login-profiles", "orange-hotel-kitchen-state", "orange-hotel-main-store-items", "orange-hotel-inventory-items", "orange-hotel-store-movements", "orange-hotel-store-usage"],
   barista: ["orange-hotel-settings", "orange-hotel-login-profiles", "orange-hotel-barista-state", "orange-hotel-main-store-items", "orange-hotel-inventory-items", "orange-hotel-store-movements", "orange-hotel-store-usage"],
   standard: ["orange-hotel-settings", "orange-hotel-login-profiles"],
-  platinum: ["orange-hotel-settings", "orange-hotel-login-profiles"],
 };
 
 async function hydrateStartupStateForRole(role: Role) {
@@ -325,189 +200,6 @@ function getBaristaInventoryLabel(item: Pick<InventoryItem, "name" | "size">) {
   if (!size) return isTotItem ? `${baseName} (TOTS)` : baseName;
   if (rawName.toLowerCase().includes(size.toLowerCase())) return rawName;
   return isTotItem ? `${baseName} ${size} (TOTS)`.trim() : `${baseName} ${size}`.trim();
-}
-
-function getPremiumBaristaTargets(label: string) {
-  const target = normalizeBaristaMenuTarget(label);
-  const aliasGroup = PREMIUM_BARISTA_PRICE_ALIASES.find((group) =>
-    group.labels.some((alias) => normalizeBaristaMenuTarget(alias) === target),
-  );
-
-  if (!aliasGroup) return [target];
-  return Array.from(new Set([target, ...aliasGroup.labels.map((alias) => normalizeBaristaMenuTarget(alias))]));
-}
-
-function getPremiumBaristaPrice(label: string) {
-  const target = normalizeBaristaMenuTarget(label);
-
-  for (const group of PREMIUM_BARISTA_PRICE_ALIASES) {
-    if (group.labels.some((alias) => normalizeBaristaMenuTarget(alias) === target)) {
-      return group.price;
-    }
-  }
-
-  const seedMatch = PREMIUM_BARISTA_INVENTORY_SEED.find((item) => {
-    if (!item.name) return false;
-    return getPremiumBaristaTargets(getBaristaInventoryLabel({ name: item.name, size: item.size ?? "" })).includes(target);
-  });
-
-  return typeof seedMatch?.sellingPrice === "number" && seedMatch.sellingPrice > 0 ? seedMatch.sellingPrice : 0;
-}
-
-function getPremiumBaristaSeedLabel(item: Partial<InventoryItem>) {
-  return getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" });
-}
-
-function getPremiumBaristaSeedId(prefix: string, item: Partial<InventoryItem>, index: number) {
-  return `${prefix}-${item.barcode || normalizeStockName(getPremiumBaristaSeedLabel(item)).replace(/\s+/g, "-") || index}`;
-}
-
-function applyPremiumBaristaPriceCorrections() {
-  if (typeof window === "undefined" || getLocalMawioTier() !== "platinum") return;
-  if (localStorage.getItem(PREMIUM_BARISTA_PRICE_FIX_KEY) === "1") return;
-
-  const inventoryItems = readJson<InventoryItem[]>("orange-hotel-inventory-items") ?? [];
-  const storeItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
-  const baristaSnapshot = readPosState<{ id: string }, { id: string }, { id: string; name: string; price: number; category: string; prepMinutes: number; barcode?: string }>(
-    STORAGE_BARISTA_STATE,
-    "orange-hotel-barista-orders",
-    "orange-hotel-barista-seq",
-    "orange-hotel-barista-payments",
-    "orange-hotel-barista-menu",
-    490,
-  );
-
-  const canonicalSeed = PREMIUM_BARISTA_INVENTORY_SEED.filter(
-    (item) => item.name && item.status === "ACTIVE" && typeof item.sellingPrice === "number" && item.sellingPrice > 0,
-  );
-
-  const nextMenuItems = [...baristaSnapshot.menuItems];
-  const existingMenuTargets = new Set(nextMenuItems.flatMap((item) => getPremiumBaristaTargets(item.name)));
-  let menuChanged = false;
-
-  for (let index = 0; index < nextMenuItems.length; index += 1) {
-    const price = getPremiumBaristaPrice(nextMenuItems[index].name);
-    if (price > 0 && nextMenuItems[index].price !== price) {
-      nextMenuItems[index] = { ...nextMenuItems[index], price };
-      menuChanged = true;
-    }
-  }
-
-  canonicalSeed.forEach((item, index) => {
-    const label = getPremiumBaristaSeedLabel(item);
-    const targets = getPremiumBaristaTargets(label);
-    if (targets.some((target) => existingMenuTargets.has(target))) return;
-
-    nextMenuItems.push({
-      id: getPremiumBaristaSeedId("premium-seed", item, index),
-      name: label,
-      price: item.sellingPrice ?? 0,
-      category: item.category ?? "cold",
-      prepMinutes: 2,
-      barcode: item.barcode ?? "",
-    });
-    targets.forEach((target) => existingMenuTargets.add(target));
-    menuChanged = true;
-  });
-
-  const nextInventoryItems = [...inventoryItems];
-  let inventoryChanged = false;
-  canonicalSeed.forEach((seedItem, index) => {
-    const label = getPremiumBaristaSeedLabel(seedItem);
-    const targets = getPremiumBaristaTargets(label);
-    const inventoryIndex = nextInventoryItems.findIndex((item) => {
-      const itemTargets = getPremiumBaristaTargets(getBaristaInventoryLabel(item));
-      return itemTargets.some((target) => targets.includes(target));
-    });
-
-    if (inventoryIndex >= 0) {
-      const current = nextInventoryItems[inventoryIndex];
-      const price = getPremiumBaristaPrice(getBaristaInventoryLabel(current)) || seedItem.sellingPrice || current.sellingPrice;
-      if (current.sellingPrice !== price || current.price !== price) {
-        nextInventoryItems[inventoryIndex] = {
-          ...current,
-          sellingPrice: price,
-          price,
-        };
-        inventoryChanged = true;
-      }
-      return;
-    }
-
-    nextInventoryItems.push({
-      id: getPremiumBaristaSeedId("premium-inventory", seedItem, index),
-      barcode: seedItem.barcode ?? "",
-      name: seedItem.name ?? "",
-      category: "Bar",
-      subCategory: seedItem.category ?? "Bar",
-      size: seedItem.size ?? "",
-      stock: seedItem.stock ?? 0,
-      buyingPrice: seedItem.buyingPrice ?? 0,
-      sellingPrice: seedItem.sellingPrice ?? 0,
-      price: seedItem.sellingPrice ?? 0,
-      status: seedItem.status ?? "ACTIVE",
-      minStock: seedItem.minStock ?? 0,
-      unit: seedItem.unit ?? "Bottle",
-      totSold: seedItem.totSold ?? 0,
-      totPerBottle: seedItem.totPerBottle,
-    });
-    inventoryChanged = true;
-  });
-
-  const nextStoreItems = [...storeItems];
-  let storeChanged = false;
-  canonicalSeed.forEach((seedItem, index) => {
-    const label = getPremiumBaristaSeedLabel(seedItem);
-    const targets = getPremiumBaristaTargets(label);
-    const storeIndex = nextStoreItems.findIndex((item) => {
-      if (item.lane !== "barista") return false;
-      const itemTargets = getPremiumBaristaTargets(getStoreItemLabel(item));
-      return itemTargets.some((target) => targets.includes(target));
-    });
-
-    if (storeIndex >= 0) {
-      const current = nextStoreItems[storeIndex];
-      const price = getPremiumBaristaPrice(getStoreItemLabel(current)) || seedItem.sellingPrice || current.sellingPrice || 0;
-      if (current.sellingPrice !== price) {
-        nextStoreItems[storeIndex] = {
-          ...current,
-          sellingPrice: price,
-        };
-        storeChanged = true;
-      }
-      return;
-    }
-
-    nextStoreItems.push({
-      id: getPremiumBaristaSeedId("premium-store", seedItem, index),
-      name: seedItem.name ?? "",
-      subCategory: seedItem.category ?? "Bar",
-      size: seedItem.size ?? "",
-      stock: seedItem.stock ?? 0,
-      unit: seedItem.unit ?? "Bottle",
-      minStock: seedItem.minStock ?? 0,
-      lane: "barista",
-      buyingPrice: seedItem.buyingPrice ?? 0,
-      sellingPrice: seedItem.sellingPrice ?? 0,
-      totLimit: seedItem.totPerBottle,
-      totSold: seedItem.totSold ?? 0,
-    });
-    storeChanged = true;
-  });
-
-  if (menuChanged) {
-    writePosState(STORAGE_BARISTA_STATE, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, baristaSnapshot.payments, nextMenuItems);
-  }
-
-  if (inventoryChanged) {
-    writeJson("orange-hotel-inventory-items", nextInventoryItems);
-  }
-
-  if (storeChanged) {
-    writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
-  }
-
-  localStorage.setItem(PREMIUM_BARISTA_PRICE_FIX_KEY, "1");
 }
 
 function syncBaristaMenuItemsWithSharedData(
@@ -1382,7 +1074,6 @@ export default function DashboardLayout({
   const [usernameDraft, setUsernameDraft] = useState("");
   const [usernameSaving, setUsernameSaving] = useState(false);
   const [usernameFeedback, setUsernameFeedback] = useState<string | null>(null);
-  const [currentHotelView, setCurrentHotelView] = useState<"standard" | "platinum">("standard");
 
   const allowedByRole: Record<Role, string[]> = {
     manager: ['/dashboard', '/dashboard/rooms', '/dashboard/inventory', '/dashboard/inventory/kitchen-stock', '/dashboard/inventory/barista-stock', '/dashboard/menu-create', '/dashboard/company-stock', '/dashboard/cashier', '/dashboard/laundry', '/dashboard/expenses', '/dashboard/finances', '/dashboard/payments', '/dashboard/kitchen', '/dashboard/cancelled', '/dashboard/barista', '/dashboard/staff', '/dashboard/settings', '/dashboard/settings/sync', '/dashboard/settings/password'],
@@ -1392,7 +1083,6 @@ export default function DashboardLayout({
     kitchen: ['/dashboard/fnb-pos', '/dashboard/kitchen', '/dashboard/cancelled', '/dashboard/payments', '/dashboard/settings/password'],
     barista: ['/dashboard/fnb-pos', '/dashboard/barista', '/dashboard/payments', '/dashboard/cancelled', '/dashboard/settings/password'],
     standard: [],
-    platinum: [],
   };
 
   const defaultByRole: Record<Role, string> = {
@@ -1403,7 +1093,6 @@ export default function DashboardLayout({
     kitchen: '/dashboard/kitchen',
     barista: '/dashboard/barista',
     standard: '/standard',
-    platinum: '/platinum',
   };
 
   useEffect(() => {
@@ -1412,7 +1101,6 @@ export default function DashboardLayout({
     async function initializeDashboard() {
       const savedRole = normalizeRole(localStorage.getItem('orange-hotel-role'));
       const savedShift = localStorage.getItem('orange-hotel-shift');
-      const activeHotelScope = getLocalMawioTier();
 
       if (!savedRole || !VALID_ROLES.includes(savedRole)) {
         localStorage.removeItem('orange-hotel-role');
@@ -1436,10 +1124,9 @@ export default function DashboardLayout({
       }
 
       localStorage.setItem("orange-hotel-role", savedRole);
-      localStorage.setItem("orange-hotel-active-login-scope", activeHotelScope);
-      localStorage.setItem("mawio-tier", activeHotelScope === "platinum" ? "platinum" : "standard");
-      setCurrentHotelView(activeHotelScope === "platinum" ? "platinum" : "standard");
-      setActiveUsername(readActiveSessionUsername(savedRole, activeHotelScope === "platinum" ? "platinum" : "standard"));
+      localStorage.setItem("mawio-tier", "standard");
+      localStorage.setItem("orange-hotel-active-login-scope", "standard");
+      setActiveUsername(readActiveSessionUsername(savedRole, "standard"));
       setRole(savedRole);
       if (savedShift) setShift(savedShift);
 
@@ -1449,21 +1136,9 @@ export default function DashboardLayout({
       setMounted(true);
 
       try {
-        if (activeHotelScope === "platinum") {
-          await runPremiumIncomeCleanSlate();
-          if (cancelled) return;
-        }
         await hydrateStartupStateForRole(savedRole);
         if (cancelled) return;
-        if (activeHotelScope === "platinum") {
-          // The premium hotel gets its own clean slate; the correction pass
-          // below patches STANDARD-hotel history and must never run against
-          // the platinum node.
-          await runOneTimePremiumSalesCleanSlate();
-          applyPremiumBaristaPriceCorrections();
-        } else {
-          applyBusinessCorrections();
-        }
+        applyBusinessCorrections();
       } catch (error) {
         console.error("Dashboard hydration failed", error);
       }
@@ -1476,27 +1151,7 @@ export default function DashboardLayout({
     };
   }, [router]);
 
-  // Keep the resolved hotel tier pinned in the URL of EVERY dashboard route.
-  // Sidebar links are static and drop the `?tier=` param on client navigation,
-  // so without this a reload/shared link could fall back to the browser-wide
-  // login scope (which the other hotel can overwrite) and render the wrong
   // hotel's data. Re-pinning here — in the layout that wraps all dashboards —
-  // fixes every dashboard from one place. getLocalMawioTier() reads the per-tab
-  // sessionStorage pin, so the value is always this tab's hotel.
-  useEffect(() => {
-    if (!mounted || typeof window === "undefined") return;
-    const tier = getLocalMawioTier();
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("tier") === tier) return;
-    params.set("tier", tier);
-    const query = params.toString();
-    window.history.replaceState(
-      window.history.state,
-      "",
-      `${window.location.pathname}${query ? `?${query}` : ""}`,
-    );
-  }, [mounted, pathname]);
-
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth >= 768) {
@@ -1557,19 +1212,6 @@ export default function DashboardLayout({
 
   const isDirector = role === "director";
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !isDirector) return;
-
-    const handleHotelViewChanged = (event: CustomEvent) => {
-      const hotel = event.detail?.hotel;
-      if (hotel === "standard" || hotel === "platinum") {
-        window.location.reload();
-      }
-    };
-
-    window.addEventListener("hotel-view-changed", handleHotelViewChanged as EventListener);
-    return () => window.removeEventListener("hotel-view-changed", handleHotelViewChanged as EventListener);
-  }, [isDirector]);
   const directorCurrentLabel =
     DIRECTOR_MOBILE_NAV.find((item) => item.href === pathname)?.label ??
     (pathname.includes("/inventory") ? "Stock" : pathname.includes("/settings") ? "Settings" : "Dashboard");
@@ -1577,7 +1219,7 @@ export default function DashboardLayout({
   if (!mounted) return null;
 
   return (
-    <div className={cn("flex h-[100dvh] w-full overflow-hidden bg-background", currentHotelView === "platinum" ? "tier-platinum" : "tier-standard", isDirector && "bg-[#f4f7f2] md:bg-background")}>
+    <div className={cn("flex h-[100dvh] w-full overflow-hidden bg-background tier-standard", isDirector && "bg-[#f4f7f2] md:bg-background")}>
       <aside
         className={cn(
           "fixed left-0 top-0 z-50 h-[100dvh] w-64 transition-transform duration-300",
@@ -1635,52 +1277,9 @@ export default function DashboardLayout({
                 <Clock className="w-3 h-3 mr-1" /> {shift}
               </Badge>
             )}
-            {isDirector ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextHotel: "standard" | "platinum" = currentHotelView === "standard" ? "platinum" : "standard";
-                    if (typeof window !== "undefined") {
-                      // Rebind the per-tab tier lock and replace the tier in the
-                      // URL before reloading. The URL is the highest-priority
-                      // tier signal, so reloading the old query would otherwise
-                      // immediately switch the director back to the old hotel.
-                      setMawioTier(nextHotel);
-                      const nextUrl = new URL(window.location.href);
-                      nextUrl.searchParams.set("tier", nextHotel);
-                      window.location.assign(nextUrl.toString());
-                    }
-                  }}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-2 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all border-2",
-                    currentHotelView === "standard"
-                      ? "border-blue-500 bg-blue-50 text-blue-600 hover:bg-blue-100"
-                      : "border-amber-500 bg-amber-50 text-amber-600 hover:bg-amber-100"
-                  )}
-                >
-                  <span>Switch to {currentHotelView === "standard" ? "Premium" : "Standard"}</span>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12M8 17h12M14 12H2" />
-                  </svg>
-                </button>
-                <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
-                  currentHotelView === "platinum"
-                    ? "border-amber-500 text-amber-600 bg-amber-50"
-                    : "border-blue-500 text-blue-600 bg-blue-50"
-                )}>
-                  {currentHotelView === "platinum" ? "Premium Hotel" : "Standard Hotel"}
-                </Badge>
-              </div>
-            ) : (
-              <Badge variant="outline" className={cn("text-[10px] font-black uppercase tracking-widest px-2",
-                typeof window !== 'undefined' && getLocalMawioTier() === "platinum"
-                  ? "border-amber-500 text-amber-600 bg-amber-50"
-                  : "border-blue-500 text-blue-600 bg-blue-50"
-              )}>
-                {typeof window !== 'undefined' && getLocalMawioTier() === "platinum" ? "Premium Hotel" : "Standard Hotel"}
-              </Badge>
-            )}
+            <Badge variant="outline" className="border-blue-500 bg-blue-50 px-2 text-[10px] font-black uppercase tracking-widest text-blue-600">
+              MAWIO Standard
+            </Badge>
             
             <div className={cn("flex items-center gap-4 text-muted-foreground", isDirector && "hidden md:flex")}>
               <SyncStatusIndicator />

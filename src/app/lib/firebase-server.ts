@@ -4,11 +4,6 @@ const FIREBASE_DATABASE_URL =
   process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL ??
   "https://mawio-67c3b-default-rtdb.firebaseio.com/";
 const FIREBASE_STORAGE_ROOT = "mawio";
-const DEFAULT_MAWIO_TIER = "standard";
-
-type ServerStorageOptions = {
-  tier?: string | null;
-};
 
 type FirebaseAnonSession = {
   idToken: string;
@@ -17,16 +12,12 @@ type FirebaseAnonSession = {
 
 let anonSessionPromise: Promise<FirebaseAnonSession> | null = null;
 
-function normalizeTier(value: string | null | undefined) {
-  return value === "platinum" ? "platinum" : DEFAULT_MAWIO_TIER;
-}
-
 function getDatabaseBaseUrl() {
   return FIREBASE_DATABASE_URL.replace(/\/+$/, "");
 }
 
-function toStoragePath(key: string, tier?: string | null) {
-  return `${FIREBASE_STORAGE_ROOT}/${normalizeTier(tier)}/${key.replace(/[.#$[\]/]/g, "-")}`;
+function toStoragePath(key: string) {
+  return `${FIREBASE_STORAGE_ROOT}/standard/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
 async function getAnonymousSession() {
@@ -71,8 +62,8 @@ async function getAnonymousSession() {
   return session;
 }
 
-async function requestDatabase<T>(key: string, init?: RequestInit, options?: ServerStorageOptions) {
-  const basePath = `${getDatabaseBaseUrl()}/${toStoragePath(key, options?.tier)}.json`;
+async function requestDatabase(key: string, init?: RequestInit) {
+  const basePath = `${getDatabaseBaseUrl()}/${toStoragePath(key)}.json`;
 
   const runRequest = async (idToken?: string) => {
     const path = idToken ? `${basePath}?auth=${encodeURIComponent(idToken)}` : basePath;
@@ -101,21 +92,21 @@ async function requestDatabase<T>(key: string, init?: RequestInit, options?: Ser
   return response;
 }
 
-export async function readServerSyncedStorageValue<T>(key: string, options?: ServerStorageOptions) {
-  const response = await requestDatabase<T>(key, { method: "GET" }, options);
+export async function readServerSyncedStorageValue<T>(key: string) {
+  const response = await requestDatabase(key, { method: "GET" });
   return (await response.json()) as T | null;
 }
 
-export async function writeServerSyncedStorageValue<T>(key: string, value: T, options?: ServerStorageOptions) {
+export async function writeServerSyncedStorageValue<T>(key: string, value: T) {
   await requestDatabase(key, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(value),
-  }, options);
+  });
 }
 
-export async function appendServerSyncedStorageItem<T>(key: string, item: T, options?: ServerStorageOptions) {
-  const current = await readServerSyncedStorageValue<T[]>(key, options);
+export async function appendServerSyncedStorageItem<T>(key: string, item: T) {
+  const current = await readServerSyncedStorageValue<T[]>(key);
   const next = Array.isArray(current) ? [item, ...current] : [item];
-  await writeServerSyncedStorageValue(key, next, options);
+  await writeServerSyncedStorageValue(key, next);
 }

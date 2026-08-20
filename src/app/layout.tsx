@@ -15,7 +15,7 @@ const playfair = Playfair_Display({
 
 export const metadata: Metadata = {
   title: 'MAWIO | Secure Booking',
-  description: 'Book Standard and Platinum rooms online at MAWIO.',
+  description: 'Book MAWIO Standard rooms online.',
   icons: {
     icon: '/logo.png',
     shortcut: '/logo.png',

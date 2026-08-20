@@ -12,7 +12,6 @@ export const runtime = "nodejs";
 
 const ROOM_PRICES = {
   standard: 20000,
-  platinum: 30000,
 } as const;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -38,7 +37,7 @@ const bookingSchema = z.object({
   fullName: z.string().trim().min(2).max(80).regex(/^[\p{L}\s.'-]+$/u, "Name contains invalid characters"),
   email: z.string().trim().toLowerCase().email().max(120),
   phone: z.string().trim().min(7).max(24).regex(/^[+0-9\s().-]+$/, "Phone number format is invalid"),
-  roomType: z.enum(["standard", "platinum"]),
+  roomType: z.literal("standard"),
   checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   guests: z.number().int().min(1).max(4),

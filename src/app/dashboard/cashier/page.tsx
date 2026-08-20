@@ -1,14 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  PLATINUM_ROOM_PRICE,
-  PREMIUM_DELUXE_ROOM_PRICE,
-  PREMIUM_STANDARD_ROOM_PRICE,
-  Role,
-  Room,
-  STANDARD_ROOM_PRICE,
-} from "@/app/lib/mock-data";
+import { Role, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
 import { readStoredRole } from "@/app/lib/auth";
 import { readCashierState, writeCashierState, getActiveCashierStateKey, getScopedStorageKey } from "@/app/lib/storage";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,12 +22,11 @@ import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { isBookingStillActive, readRoomsState, syncRoomsStateFromBookings, updateRoomStatusByNumber } from "@/app/lib/rooms-storage";
 import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
-import { getLocalMawioTier } from "@/app/lib/login-profiles";
 
 type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
 type TransactionTab = "completed" | "credit";
 type BookingDateFilter = "all" | "day" | "week" | "month";
-type RoomType = "standard" | "platinum";
+type RoomType = "standard";
 type TransactionStatus = "completed" | "credit" | "checked-out";
 type BookingCurrency = "TSh" | "$";
 type SpecialPackage =
@@ -67,50 +59,32 @@ interface BookingRecord {
   lastExtendedAt?: number;
 }
 
-const ROOM_RATE: Record<"standard" | "platinum", Record<RoomType, number>> = {
-  standard: {
-    standard: STANDARD_ROOM_PRICE,
-    platinum: PLATINUM_ROOM_PRICE,
-  },
-  platinum: {
-    standard: PREMIUM_STANDARD_ROOM_PRICE,
-    platinum: PREMIUM_DELUXE_ROOM_PRICE,
-  },
-};
-
-function getFallbackRoomRate(roomType: RoomType): number {
-  const scope = typeof window === "undefined" ? "standard" : getLocalMawioTier();
-  return ROOM_RATE[scope][roomType];
+function getFallbackRoomRate(): number {
+  return STANDARD_ROOM_PRICE;
 }
 
-function getRoomTypeLabel(roomType: RoomType): string {
-  if (typeof window === "undefined") return roomType === "standard" ? "Standard" : "Premium";
-  const scope = getLocalMawioTier();
-  if (roomType === "standard") return "Standard";
-  return scope === "platinum" ? "Deluxe" : "Premium";
+function getRoomTypeLabel(): string {
+  return "Standard";
 }
 
 const SPECIAL_PACKAGES: Record<
   SpecialPackage,
-  { label: string; currency: BookingCurrency; standardRate: number; platinumRate: number }
+  { label: string; currency: BookingCurrency; rate: number }
 > = {
   "resident-with-breakfast": {
     label: "Resident with Breakfast",
     currency: "TSh",
-    standardRate: STANDARD_ROOM_PRICE,
-    platinumRate: PLATINUM_ROOM_PRICE,
+    rate: STANDARD_ROOM_PRICE,
   },
   "non-resident-with-breakfast": {
     label: "Non Resident with Breakfast",
     currency: "$",
-    standardRate: 60,
-    platinumRate: 90,
+    rate: 60,
   },
   "ninety-day-special": {
     label: "90 Day Special Package",
     currency: "TSh",
-    standardRate: STANDARD_ROOM_PRICE,
-    platinumRate: PLATINUM_ROOM_PRICE,
+    rate: STANDARD_ROOM_PRICE,
   },
 };
 
@@ -276,11 +250,7 @@ export default function BookingPage() {
     () => rooms.find((room) => room.number === selectedRoomNumber) ?? null,
     [rooms, selectedRoomNumber],
   );
-  const selectedRate = packageConfig
-    ? roomType === "standard"
-      ? packageConfig.standardRate
-      : packageConfig.platinumRate
-    : selectedRoom?.price ?? getFallbackRoomRate(roomType);
+  const selectedRate = packageConfig?.rate ?? selectedRoom?.price ?? getFallbackRoomRate();
   const rate = Number.isFinite(selectedRate) && selectedRate > 0 ? selectedRate : 0;
   const bookingCurrency: BookingCurrency = packageConfig?.currency ?? "TSh";
   const accountingCurrency = toAccountingCurrency(bookingCurrency);
@@ -313,8 +283,8 @@ export default function BookingPage() {
       setPackageRate("");
       return;
     }
-    setPackageRate(String(roomType === "standard" ? packageConfig.standardRate : packageConfig.platinumRate));
-  }, [packageConfig, roomType]);
+    setPackageRate(String(packageConfig.rate));
+  }, [packageConfig]);
 
   const completedTransactions = useMemo(
     () => transactions.filter((tx) => tx.status === "completed" || tx.status === "checked-out"),
@@ -338,9 +308,8 @@ export default function BookingPage() {
     [editingBookingId, transactions],
   );
   const roomPickerRooms = useMemo(() => {
-    const wantedType = roomType === "standard" ? "Standard" : "Platinum";
-    return rooms.filter((room) => room.type === wantedType);
-  }, [activeBookedRoomNumbers, roomType, rooms]);
+    return rooms.filter((room) => room.type === "Standard");
+  }, [activeBookedRoomNumbers, rooms]);
   const availableRooms = useMemo(
     () =>
       roomPickerRooms.filter(
@@ -737,7 +706,7 @@ export default function BookingPage() {
 
           <div className="space-y-2">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Selected Room Type</p>
-            <div className="grid grid-cols-2 gap-2">
+            <div>
               <button
                 type="button"
                 onClick={() => {
@@ -748,19 +717,7 @@ export default function BookingPage() {
                   roomType === "standard" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
                 }`}
               >
-                {getRoomTypeLabel("standard")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setRoomType("platinum");
-                  setRoomPickerOpen(true);
-                }}
-                className={`h-11 rounded-xl border text-[10px] font-black uppercase tracking-widest transition ${
-                  roomType === "platinum" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
-                }`}
-              >
-                {getRoomTypeLabel("platinum")}
+                {getRoomTypeLabel()}
               </button>
             </div>
             {selectedRoomNumber && (
@@ -776,9 +733,9 @@ export default function BookingPage() {
               onChange={(event) => setSelectedPackage(event.target.value as SpecialPackage | "none")}
             >
               <option value="none">No special package</option>
-              <option value="resident-with-breakfast">Resident with Breakfast (Standard TSh 70,000 | Premium TSh 100,000)</option>
-              <option value="non-resident-with-breakfast">Non Resident with Breakfast (Standard $60 | Premium $90)</option>
-              <option value="ninety-day-special">90 Day Special Package (Standard TSh 70,000 | Premium TSh 100,000)</option>
+              <option value="resident-with-breakfast">Resident with Breakfast (TSh 20,000)</option>
+              <option value="non-resident-with-breakfast">Non Resident with Breakfast ($60)</option>
+              <option value="ninety-day-special">90 Day Special Package (TSh 20,000)</option>
             </select>
 
             {packageConfig && (
@@ -790,7 +747,7 @@ export default function BookingPage() {
                   placeholder="Rate per night"
                 />
                 <div className="rounded-md border px-3 py-2 text-sm font-black uppercase tracking-widest text-muted-foreground">
-                  {getRoomTypeLabel(roomType)} package rate: {packageConfig.currency} {rate.toLocaleString()}
+                  {getRoomTypeLabel()} package rate: {packageConfig.currency} {rate.toLocaleString()}
                   {packageConfig.currency === "$" ? ` | TSh ${accountingRate.toLocaleString()} accounting` : ""}
                 </div>
               </div>
@@ -982,7 +939,7 @@ export default function BookingPage() {
           <Card className="w-full max-w-2xl">
             <CardHeader>
               <CardTitle className="text-xl font-black uppercase tracking-tight">
-                {getRoomTypeLabel(roomType)} Rooms
+                {getRoomTypeLabel()} Rooms
               </CardTitle>
               <CardDescription>Select from all rooms. Only available rooms can be booked.</CardDescription>
             </CardHeader>

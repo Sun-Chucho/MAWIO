@@ -2,17 +2,14 @@
 
 import { Role } from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
-import { getMawioTier } from "@/app/lib/firebase-sync";
 
 export const STORAGE_LOGIN_PROFILES = "orange-hotel-login-profiles";
 export const STORAGE_ACTIVE_USERNAME = "orange-hotel-username";
 export const SESSION_IDENTITY_EVENT = "orange-hotel-session-identity-updated";
-export type LoginProfileScope = "core" | "standard" | "platinum";
+export type LoginProfileScope = "standard";
 
-// Single source of truth for the active hotel tier: delegate to getMawioTier so
-// the per-tab tier lock is shared and the two resolvers can never disagree.
-export function getLocalMawioTier(): "standard" | "platinum" {
-  return getMawioTier();
+export function getLocalMawioTier(): "standard" {
+  return "standard";
 }
 
 export interface LoginUserAccount {
@@ -36,49 +33,27 @@ export const DEFAULT_LOGIN_PASSWORD = "1234";
 export const MANAGER_LOGIN_PASSWORD = "4321";
 export const MANAGER_SESSION_VERSION = "manager-password-4321-v1";
 export const STORAGE_MANAGER_SESSION_VERSION = "orange-hotel-manager-session-version";
-
-const STORAGE_LOGIN_PROFILES_BY_SCOPE: Record<LoginProfileScope, string> = {
-  core: STORAGE_LOGIN_PROFILES,
-  standard: "orange-hotel-login-profiles-standard",
-  platinum: "orange-hotel-login-profiles-platinum",
-};
-
-const STORAGE_ACTIVE_USERNAME_BY_SCOPE: Record<LoginProfileScope, string> = {
-  core: STORAGE_ACTIVE_USERNAME,
-  standard: "orange-hotel-username-standard",
-  platinum: "orange-hotel-username-platinum",
-};
-
-const STORAGE_ACTIVE_ROLE_BY_SCOPE: Record<LoginProfileScope, string> = {
-  core: "orange-hotel-role",
-  standard: "orange-hotel-role-standard",
-  platinum: "orange-hotel-role-platinum",
-};
-
-const STORAGE_MANAGER_SESSION_VERSION_BY_SCOPE: Record<LoginProfileScope, string> = {
-  core: STORAGE_MANAGER_SESSION_VERSION,
-  standard: "orange-hotel-manager-session-version-standard",
-  platinum: "orange-hotel-manager-session-version-platinum",
-};
+const LEGACY_STANDARD_LOGIN_PROFILES = "orange-hotel-login-profiles-standard";
+const LEGACY_STANDARD_USERNAME = "orange-hotel-username-standard";
 
 export function normalizeLoginProfileScope(value: string | null | undefined): LoginProfileScope {
-  return value === "platinum" ? "platinum" : value === "standard" ? "standard" : "core";
+  return "standard";
 }
 
-export function getLoginProfilesStorageKey(scope: LoginProfileScope = "core") {
-  return STORAGE_LOGIN_PROFILES_BY_SCOPE[scope];
+export function getLoginProfilesStorageKey(_scope: LoginProfileScope = "standard") {
+  return STORAGE_LOGIN_PROFILES;
 }
 
-export function getActiveSessionUsernameStorageKey(scope: LoginProfileScope = "core") {
-  return STORAGE_ACTIVE_USERNAME_BY_SCOPE[scope];
+export function getActiveSessionUsernameStorageKey(_scope: LoginProfileScope = "standard") {
+  return STORAGE_ACTIVE_USERNAME;
 }
 
-export function getActiveSessionRoleStorageKey(scope: LoginProfileScope = "core") {
-  return STORAGE_ACTIVE_ROLE_BY_SCOPE[scope];
+export function getActiveSessionRoleStorageKey(_scope: LoginProfileScope = "standard") {
+  return "orange-hotel-role";
 }
 
-export function getManagerSessionVersionStorageKey(scope: LoginProfileScope = "core") {
-  return STORAGE_MANAGER_SESSION_VERSION_BY_SCOPE[scope];
+export function getManagerSessionVersionStorageKey(_scope: LoginProfileScope = "standard") {
+  return STORAGE_MANAGER_SESSION_VERSION;
 }
 
 export function getDefaultLoginPassword(role: Role) {
@@ -96,7 +71,12 @@ function dispatchSessionIdentityUpdated() {
 export function readLocalLoginProfiles(scope?: LoginProfileScope) {
   if (typeof window === "undefined") return null;
   const activeScope = scope ?? getLocalMawioTier();
-  return readJson<LoginProfiles>(getLoginProfilesStorageKey(activeScope));
+  const profiles = readJson<LoginProfiles>(getLoginProfilesStorageKey(activeScope));
+  if (profiles) return profiles;
+
+  const legacyProfiles = readJson<LoginProfiles>(LEGACY_STANDARD_LOGIN_PROFILES);
+  if (legacyProfiles) writeLocalLoginProfiles(legacyProfiles, activeScope);
+  return legacyProfiles;
 }
 
 export function writeLocalLoginProfiles(profiles: LoginProfiles, scope?: LoginProfileScope) {
@@ -109,7 +89,9 @@ export function writeLocalLoginProfiles(profiles: LoginProfiles, scope?: LoginPr
 export function readActiveSessionUsername(fallback = "", scope?: LoginProfileScope) {
   if (typeof window === "undefined") return fallback;
   const activeScope = scope ?? getLocalMawioTier();
-  return localStorage.getItem(getActiveSessionUsernameStorageKey(activeScope)) ?? fallback;
+  return localStorage.getItem(getActiveSessionUsernameStorageKey(activeScope))
+    ?? localStorage.getItem(LEGACY_STANDARD_USERNAME)
+    ?? fallback;
 }
 
 export function writeActiveSessionUsername(username: string, scope?: LoginProfileScope) {
@@ -145,11 +127,7 @@ export async function hydrateLoginProfilesFromServer(scope?: LoginProfileScope) 
   const activeScope = scope ?? getLocalMawioTier();
 
   try {
-    const params = new URLSearchParams();
-    if (activeScope !== "core") {
-      params.set("scope", activeScope);
-    }
-    const response = await fetch(`/api/login-profiles${params.toString() ? `?${params.toString()}` : ""}`, { cache: "no-store" });
+    const response = await fetch("/api/login-profiles", { cache: "no-store" });
     if (!response.ok) return null;
     const profiles = (await response.json()) as LoginProfiles;
     writeLocalLoginProfiles(profiles ?? {}, activeScope);

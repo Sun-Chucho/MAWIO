@@ -59,9 +59,10 @@ const ROLE_MANIFESTS = {
 } as const;
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   context: { params: Promise<{ role: string }> },
 ) {
+  void _request;
   const { role } = await context.params;
   const manifest = ROLE_MANIFESTS[role as keyof typeof ROLE_MANIFESTS];
 
@@ -69,55 +70,30 @@ export async function GET(
     return NextResponse.json({ error: "Manifest not found." }, { status: 404 });
   }
 
-  const tier = request.nextUrl.searchParams.get("tier");
   let startUrl: string = manifest.start_url;
   let name: string = manifest.name;
   let shortName: string = manifest.short_name;
 
-  if (tier === "standard") {
-    if (role === "barista") {
+  if (role === "barista") {
       startUrl = "/SBAR";
       name = "MAWIO Standard Barista POS";
       shortName = "Std Barista";
-    } else if (role === "kitchen") {
+  } else if (role === "kitchen") {
       startUrl = "/SKIT";
       name = "MAWIO Standard Kitchen POS";
       shortName = "Std Kitchen";
-    } else if (role === "manager") {
+  } else if (role === "manager") {
       startUrl = "/smanager";
       name = "MAWIO Standard Manager";
       shortName = "Std Manager";
-    } else if (role === "inventory") {
+  } else if (role === "inventory") {
       startUrl = "/SIM";
       name = "MAWIO Standard Inventory";
       shortName = "Std Inventory";
-    } else if (role === "cashier") {
+  } else if (role === "cashier") {
       startUrl = "/SRB";
       name = "MAWIO Standard Reception";
       shortName = "Std Reception";
-    }
-  } else if (tier === "platinum") {
-    if (role === "barista") {
-      startUrl = "/PBAR";
-      name = "MAWIO Premium Barista POS";
-      shortName = "Prem Barista";
-    } else if (role === "kitchen") {
-      startUrl = "/PKIT";
-      name = "MAWIO Premium Kitchen POS";
-      shortName = "Prem Kitchen";
-    } else if (role === "manager") {
-      startUrl = "/pmanager";
-      name = "MAWIO Premium Manager";
-      shortName = "Prem Manager";
-    } else if (role === "inventory") {
-      startUrl = "/PIM";
-      name = "MAWIO Premium Inventory";
-      shortName = "Prem Inventory";
-    } else if (role === "cashier") {
-      startUrl = "/PRB";
-      name = "MAWIO Premium Reception";
-      shortName = "Prem Reception";
-    }
   }
 
   return new NextResponse(

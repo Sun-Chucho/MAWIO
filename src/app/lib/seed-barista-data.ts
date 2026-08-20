@@ -1,33 +1,6 @@
 import { InventoryItem } from "./mock-data";
-
-export const PREMIUM_BARISTA_PRICE_ALIASES: Array<{ price: number; labels: string[] }> = [
-  { price: 10000, labels: ["Captain Morgan 200ml", "Captain Morgan Gold 200ml", "Captain Morgan"] },
-  { price: 10000, labels: ["Drostdy Hof 375ml", "Drostdy Hof Claret 375ml", "Drostdyhof 375ml", "Drostdyhof 375mls"] },
-  { price: 10000, labels: ["Gilbeys 200ml", "Gilbeys Gin 200ml", "Gilbeys 200mls"] },
-  { price: 5000, labels: ["Heineken 330ml", "Heineken Beer Btl 330ml", "Heineken 330mls"] },
-  { price: 15000, labels: ["J & B 200ml", "J & B Rare 200ml", "J&B 200ml", "J&B"] },
-  { price: 13000, labels: ["K-Vant 750ml", "K-vant 750mls"] },
-  { price: 18000, labels: ["Saint Anna 750ml", "Saint Anna Wine 750ml", "Saint anna"] },
-  { price: 5000, labels: ["Savanna Dry 330ml", "Savanah Dry 330ml", "Savana Dry 330ml", "Savana dry"] },
-  { price: 4000, labels: ["Smirnoff Ice 300ml", "Smirnoff Ice Bottle Mix 300ml", "Smirnoff ice 300mls"] },
-  { price: 5000, labels: ["Windhoek Lager 330ml", "Windhoek 330ml", "Windhoek"] },
-  { price: 7000, labels: ["Zanzi 200ml", "Zanzi Cream 200ml", "Zanzi"] },
-  { price: 2500, labels: ["Serengeti Lite 330ml", "Serengeti lite"] },
-  { price: 2500, labels: ["Serengeti Lemon 330ml", "Serengeti lemon"] },
-  { price: 2500, labels: ["Serengeti Lager 330ml", "Serengeti lager"] },
-  { price: 3000, labels: ["Serengeti Apple 330ml", "Serengeti apple"] },
-  { price: 2500, labels: ["Castle Lite 330ml", "Crystal Lite 330ml", "Castle lite"] },
-  { price: 2500, labels: ["Kilimanjaro Lager 330ml", "Kilimanjaro lager"] },
-  { price: 2500, labels: ["Safari Lager 330ml", "Safari lager"] },
-  { price: 2000, labels: ["GSM Water 1.5L", "GSM Water 1.5 ltr", "Gsm water 1.5 ltr"] },
-  { price: 1000, labels: ["GSM Water 500ml", "GSM Water 500mls", "Gsm water 500mls"] },
-  { price: 2000, labels: ["Kilimanjaro Water 1.5L", "Kilimanjaro Water 1.5 ltr", "Kili Water 1.5L", "Kilimanjaro water 1.5 ltr"] },
-  { price: 5000, labels: ["Brutal Fruit 275ml", "Brutal Fruit", "Brutal fruit"] },
-];
-
 export const BARISTA_INVENTORY_SEED: Partial<InventoryItem>[] = [
-  // Spirits. buyingPrice is filled from the matching premium item where the same
-  // product is supplied to both hotels (same supplier); 0 means "set in manager".
+  // Spirits. A buying price of 0 means the manager should set the supplier cost.
   { barcode: "6200200010001", name: "Konyagi", category: "Spirit", size: "500ml", stock: 2, buyingPrice: 0, sellingPrice: 12000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
   { barcode: "6200200020002", name: "Konyagi", category: "Spirit", size: "750ml", stock: 6, buyingPrice: 0, sellingPrice: 15000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
   { barcode: "6200200030003", name: "K-Vant Blue", category: "Spirit", size: "250ml", stock: 6, buyingPrice: 0, sellingPrice: 5000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
@@ -81,13 +54,13 @@ export const BARISTA_INVENTORY_SEED: Partial<InventoryItem>[] = [
   // Juice
   { barcode: "6200200440044", name: "Ceres Nectar Tropical", category: "Juice", size: "", stock: 2, buyingPrice: 0, sellingPrice: 7000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
   { barcode: "6200200450045", name: "Azam Juice", category: "Juice", size: "", stock: 3, buyingPrice: 3166.67, sellingPrice: 5000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  // Coffee & Tea (barista specialties — no stock tracking)
+  // Coffee & Tea (barista specialties â€” no stock tracking)
   { barcode: "", name: "flat white", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 5000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "espresso mocchito", category: "espresso", size: "", stock: 0, buyingPrice: 0, sellingPrice: 5000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "double espresso", category: "espresso", size: "", stock: 0, buyingPrice: 0, sellingPrice: 5000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "americano", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 6000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "cappuccino", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 8000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
-  { barcode: "", name: "café mocha", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
+  { barcode: "", name: "cafÃ© mocha", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "iced americano", category: "cold", size: "", stock: 0, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Glass", totSold: 0 },
   { barcode: "", name: "iced coffee", category: "cold", size: "", stock: 0, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Glass", totSold: 0 },
   { barcode: "", name: "milk", category: "coffee", size: "", stock: 0, buyingPrice: 0, sellingPrice: 1000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
@@ -95,47 +68,4 @@ export const BARISTA_INVENTORY_SEED: Partial<InventoryItem>[] = [
   { barcode: "", name: "ice cream vanila", category: "snacks", size: "", stock: 4, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "ice cream choco", category: "snacks", size: "", stock: 4, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
   { barcode: "", name: "ice cream strw", category: "snacks", size: "", stock: 4, buyingPrice: 0, sellingPrice: 10000, status: "ACTIVE", minStock: 0, unit: "Cup", totSold: 0 },
-];
-
-export const PREMIUM_BARISTA_INVENTORY_SEED: Partial<InventoryItem>[] = [
-  { barcode: "6200100001", name: "ALTA Wine", category: "Wine", size: "750ml", stock: 6, buyingPrice: 11250, sellingPrice: 15000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100002", name: "Alta Energy Drink", category: "Energy Drink", size: "250ml", stock: 12, buyingPrice: 1000, sellingPrice: 2000, status: "ACTIVE", minStock: 5, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100003", name: "Azam Tropical Juice", category: "Juice", size: "1L", stock: 6, buyingPrice: 3166.67, sellingPrice: 5000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100004", name: "Ballantine", category: "Whisky", size: "200ml", stock: 6, buyingPrice: 14000, sellingPrice: 25000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100005", name: "Black & White", category: "Whisky", size: "200ml", stock: 6, buyingPrice: 8500, sellingPrice: 15000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100006", name: "Campari", category: "Aperitif", size: "200ml", stock: 6, buyingPrice: 20000, sellingPrice: 25000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100007", name: "Captain Morgan", category: "Rum", size: "200ml", stock: 6, buyingPrice: 4100, sellingPrice: 10000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100008", name: "Desperados", category: "Beer", size: "330ml", stock: 24, buyingPrice: 3250, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100009", name: "Drostdy Hof", category: "Wine", size: "750ml", stock: 6, buyingPrice: 11083, sellingPrice: 18000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100010", name: "Drostdy Hof", category: "Wine", size: "375ml", stock: 6, buyingPrice: 6833.4, sellingPrice: 10000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100011", name: "Drostdy Hof Claret", category: "Wine", size: "750ml", stock: 6, buyingPrice: 14500, sellingPrice: 18000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100012", name: "Four Cousins N/Sweet White", category: "Wine", size: "750ml", stock: 6, buyingPrice: 14500, sellingPrice: 18000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100013", name: "Gilbeys", category: "Gin", size: "200ml", stock: 6, buyingPrice: 5708.4, sellingPrice: 10000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100014", name: "Grand Malt Can", category: "Malt", size: "330ml", stock: 24, buyingPrice: 2083.33, sellingPrice: 3000, status: "ACTIVE", minStock: 10, unit: "Can", totSold: 0 },
-  { barcode: "6200100015", name: "Hanson's Choice", category: "Whisky", size: "200ml", stock: 12, buyingPrice: 3100, sellingPrice: 5000, status: "ACTIVE", minStock: 5, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100016", name: "Heineken", category: "Beer", size: "330ml", stock: 24, buyingPrice: 3175, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100017", name: "J & B", category: "Whisky", size: "200ml", stock: 6, buyingPrice: 11500, sellingPrice: 15000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100018", name: "Jagermeister", category: "Spirit", size: "200ml", stock: 6, buyingPrice: 19000, sellingPrice: 25000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100019", name: "K-Vant", category: "Spirit", size: "250ml", stock: 1, buyingPrice: 39750, sellingPrice: 5000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100020", name: "K-Vant", category: "Spirit", size: "750ml", stock: 3, buyingPrice: 9541.66, sellingPrice: 13000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100021", name: "Red Bull Energy", category: "Energy Drink", size: "250ml", stock: 24, buyingPrice: 1833.33, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Can", totSold: 0 },
-  { barcode: "6200100022", name: "Robertson Natural Sweet Red", category: "Wine", size: "750ml", stock: 3, buyingPrice: 14666.7, sellingPrice: 20000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100023", name: "Saint Anna", category: "Wine", size: "750ml", stock: 3, buyingPrice: 12500, sellingPrice: 18000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100024", name: "Savanna Dry", category: "Cider", size: "330ml", stock: 24, buyingPrice: 3250, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100025", name: "Smirnoff Ice", category: "Cider", size: "300ml", stock: 24, buyingPrice: 3333.33, sellingPrice: 4000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100026", name: "Smirnoff Vodka", category: "Vodka", size: "250ml", stock: 6, buyingPrice: 10000, sellingPrice: 13000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100027", name: "Windhoek Lager", category: "Beer", size: "330ml", stock: 24, buyingPrice: 3175, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100028", name: "Zanzi", category: "Liqueur", size: "200ml", stock: 6, buyingPrice: 5708.33, sellingPrice: 7000, status: "ACTIVE", minStock: 1, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100029", name: "Serengeti Lite", category: "Beer", size: "330ml", stock: 25, buyingPrice: 1640, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100030", name: "Serengeti Lager", category: "Beer", size: "330ml", stock: 20, buyingPrice: 1525, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100031", name: "Serengeti Lemon", category: "Beer", size: "330ml", stock: 20, buyingPrice: 1600, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100032", name: "Serengeti Apple", category: "Beer", size: "330ml", stock: 20, buyingPrice: 2500, sellingPrice: 3000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100033", name: "Castle Lite", category: "Beer", size: "330ml", stock: 20, buyingPrice: 1600, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100034", name: "Kilimanjaro Lager", category: "Beer", size: "330ml", stock: 20, buyingPrice: 1500, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100035", name: "Safari Lager", category: "Beer", size: "330ml", stock: 20, buyingPrice: 1500, sellingPrice: 2500, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100036", name: "GSM Water", category: "Water", size: "1.5L", stock: 6, buyingPrice: 700, sellingPrice: 2000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100037", name: "GSM Water", category: "Water", size: "500ml", stock: 6, buyingPrice: 700, sellingPrice: 1000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100038", name: "Kilimanjaro Water", category: "Water", size: "1.5L", stock: 6, buyingPrice: 783.33, sellingPrice: 2000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100039", name: "Kilimanjaro Water", category: "Water", size: "500ml", stock: 6, buyingPrice: 700, sellingPrice: 1000, status: "ACTIVE", minStock: 2, unit: "Bottle", totSold: 0 },
-  { barcode: "6200100040", name: "Brutal Fruit", category: "Cider", size: "275ml", stock: 24, buyingPrice: 0, sellingPrice: 5000, status: "ACTIVE", minStock: 10, unit: "Bottle", totSold: 0 },
 ];
