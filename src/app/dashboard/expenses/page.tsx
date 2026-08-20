@@ -26,6 +26,32 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Save, WalletCards } from "lucide-react";
 
+function toDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function timestampForExpenseDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const now = new Date();
+  const timestamp = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+
+  if (toDateInputValue(timestamp) !== value || timestamp.getTime() > Date.now()) return null;
+  return timestamp.getTime();
+}
+
 function formatDate(value: number) {
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
@@ -42,6 +68,7 @@ export default function ExpensesPage() {
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [amountType, setAmountType] = useState<ExpenseAmountType>("cash");
+  const [expenseDate, setExpenseDate] = useState(() => toDateInputValue());
   const [notes, setNotes] = useState("");
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [movingExpense, setMovingExpense] = useState<ExpenseRecord | null>(null);
@@ -62,7 +89,10 @@ export default function ExpensesPage() {
 
   const isDirector = role === "director";
   const filteredExpenses = useMemo(
-    () => expenses.filter((expense) => expense.department === department),
+    () =>
+      expenses
+        .filter((expense) => expense.department === department)
+        .sort((left, right) => right.createdAt - left.createdAt),
     [department, expenses],
   );
   const groupedTotals = useMemo(
@@ -82,7 +112,8 @@ export default function ExpensesPage() {
   const saveExpense = () => {
     if (isDirector) return;
     const parsedAmount = Number(amount);
-    if (!title.trim() || Number.isNaN(parsedAmount) || parsedAmount <= 0) return;
+    const createdAt = timestampForExpenseDate(expenseDate);
+    if (!title.trim() || Number.isNaN(parsedAmount) || parsedAmount <= 0 || createdAt === null) return;
 
     const nextExpense: ExpenseRecord = {
       id: `expense-${Date.now()}`,
@@ -91,7 +122,8 @@ export default function ExpensesPage() {
       amount: parsedAmount,
       amountType,
       notes: notes.trim() || undefined,
-      createdAt: Date.now(),
+      expenseDate,
+      createdAt,
       createdBy: role,
       payoutStatus: role === "manager" ? "approved" : undefined,
     };
@@ -102,6 +134,7 @@ export default function ExpensesPage() {
     setTitle("");
     setAmount("");
     setAmountType("cash");
+    setExpenseDate(toDateInputValue());
     setNotes("");
   };
 
@@ -166,7 +199,7 @@ export default function ExpensesPage() {
               <WalletCards className="h-5 w-5 text-primary" />
               New {getExpenseDepartmentLabel(department)} Request
             </CardTitle>
-            <CardDescription>Save the request with amount type and optional notes.</CardDescription>
+            <CardDescription>Save the request with its actual expense date, amount type, and optional notes.</CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 pt-4 md:grid-cols-2">
             <div className="space-y-1">
@@ -188,6 +221,16 @@ export default function ExpensesPage() {
                   <option key={item.value} value={item.value}>{item.label}</option>
                 ))}
               </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Expense Date</Label>
+              <Input
+                type="date"
+                max={toDateInputValue()}
+                required
+                value={expenseDate}
+                onChange={(event) => setExpenseDate(event.target.value)}
+              />
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Optional Notes</Label>
