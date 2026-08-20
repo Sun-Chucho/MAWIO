@@ -32,7 +32,7 @@ import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-ma
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { toast } from "@/hooks/use-toast";
-import { hydrateStorageKeyFromFirebase, purgeSyncedKeys, runOnceAcrossDevices, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -245,76 +245,6 @@ function isTotInventoryItem(item: Pick<InventoryItem, "name" | "totPerBottle">) 
   return (typeof item.totPerBottle === "number" && item.totPerBottle > 0) || /\s*\(?TOTS?\)?$/i.test(item.name);
 }
 
-function buildStandardSeedMenuItems(): BaristaMenuItem[] {
-  return BARISTA_INVENTORY_SEED
-    .filter((item) => item.name && item.status === "ACTIVE")
-    .map((item, idx) => ({
-      id: `standard-seed-${idx}`,
-      name: getBaristaInventoryLabel({ name: item.name ?? "", size: item.size ?? "" }),
-      // Customer-facing POS price is always the selling price; buying price is
-      // reserved for manager costing only.
-      price: item.sellingPrice ?? 0,
-      buyingPrice: item.buyingPrice ?? 0,
-      category: normalizeCategory(item.category ?? "cold", item.name ?? ""),
-      prepMinutes: 2,
-      barcode: item.barcode ?? "",
-    }));
-}
-
-// Bumping this version forces the standard barista menu to be re-seeded from
-// BARISTA_INVENTORY_SEED once per browser, so uploaded drink-list changes show
-// up even when a stale menu was already persisted.
-const STANDARD_BARISTA_SEED_VERSION_KEY = "orange-hotel-standard-barista-seed-v2";
-
-// One-time refresh of SELLING prices on an already-persisted menu from the
-// canonical seed price list. Custom drinks and any
-// manual price edits made after this runs are left untouched. Bump to re-apply.
-const BARISTA_MENU_PRICE_SYNC_KEY = "orange-hotel-barista-menu-price-sync-v2";
-
-function getEquivalentBaristaTargets(label: string) {
-  return [normalizeBaristaTarget(label)];
-}
-
-function appendMissingCanonicalMenuItems(menuItems: BaristaMenuItem[]) {
-  const seedMenuItems = buildStandardSeedMenuItems();
-  const existingTargets = new Set(menuItems.flatMap((item) => getEquivalentBaristaTargets(item.name)));
-  let changed = false;
-  const next = [...menuItems];
-
-  for (const seedItem of seedMenuItems) {
-    const seedTargets = getEquivalentBaristaTargets(seedItem.name);
-    if (seedTargets.some((target) => existingTargets.has(target))) continue;
-
-    next.push(seedItem);
-    seedTargets.forEach((target) => existingTargets.add(target));
-    changed = true;
-  }
-
-  return { menuItems: next, changed };
-}
-
-function applyCanonicalSellingPrices(menuItems: BaristaMenuItem[]) {
-  const priceByTarget = new Map<string, number>();
-  for (const item of BARISTA_INVENTORY_SEED) {
-    if (!item.name || typeof item.sellingPrice !== "number" || item.sellingPrice <= 0) continue;
-    const label = getBaristaInventoryLabel({ name: item.name, size: item.size ?? "" });
-    priceByTarget.set(normalizeBaristaTarget(label), item.sellingPrice);
-  }
-
-  let changed = false;
-  const next = menuItems.map((item) => {
-    const price = priceByTarget.get(normalizeBaristaTarget(item.name));
-    if (typeof price !== "number" || price === item.price) return item;
-    changed = true;
-    return { ...item, price };
-  });
-
-  return { menuItems: next, changed };
-}
-
-// One-time barista clean-slate marker.
-const BARISTA_RESET_KEY = "orange-hotel-barista-reset-v3";
-
 export default function BaristaPage() {
   const isDirector = useIsDirector();
   const { confirm, dialog } = useConfirmDialog();
@@ -420,60 +350,19 @@ export default function BaristaPage() {
       const inventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
       setInventoryItems(inventory);
 
-      let menuItems = snapshot.menuItems;
-      let menuMutated = false;
-      const needsForcedSeed =
-        typeof window !== "undefined" && !window.localStorage.getItem(STANDARD_BARISTA_SEED_VERSION_KEY);
-      if (menuItems.length === 0 || needsForcedSeed) {
-        menuItems = buildStandardSeedMenuItems();
-        menuMutated = true;
-      }
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(STANDARD_BARISTA_SEED_VERSION_KEY, "1");
-      }
-
-      // One-time selling-price refresh from the canonical seed price list, so
-      // menus persisted before a price correction stop showing stale (or
-      // supplier-cost) prices in the POS.
-      const priceSyncMarker = BARISTA_MENU_PRICE_SYNC_KEY;
-      if (typeof window !== "undefined" && !window.localStorage.getItem(priceSyncMarker)) {
-        const priceSync = applyCanonicalSellingPrices(menuItems);
-        if (priceSync.changed) {
-          menuItems = priceSync.menuItems;
-          menuMutated = true;
-        }
-
-        const missingSeedSync = appendMissingCanonicalMenuItems(menuItems);
-        if (missingSeedSync.changed) {
-          menuItems = missingSeedSync.menuItems;
-          menuMutated = true;
-        }
-
-        window.localStorage.setItem(priceSyncMarker, "1");
-      }
-
-      if (menuMutated) {
+      const menuItems = syncBaristaMenuItemsWithSharedInventory(
+        snapshot.menuItems,
+        inventory,
+        readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+      );
+      if (snapshot.menuItems.length === 0 && menuItems.length > 0) {
         writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
       }
-
-      setStoredMenuItems(syncBaristaMenuItemsWithSharedInventory(menuItems, inventory, readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []));
+      setStoredMenuItems(menuItems);
       setPosHydrated(true);
     };
 
     const bootstrapBarista = async () => {
-      // One-time clean slate for stale barista data. It runs once, then reseeds below.
-      // dashboard truly own its sales/menu with no cross-hotel conflict.
-      await runOnceAcrossDevices(BARISTA_RESET_KEY, async () => {
-        await purgeSyncedKeys([
-          activeBaristaKey,
-          STORAGE_TICKETS,
-          STORAGE_SEQ,
-          STORAGE_PAYMENTS,
-          STORAGE_MENU,
-          STORAGE_WASTE,
-        ]);
-      });
-
       await Promise.all([
         hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
         hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS).catch(() => undefined),

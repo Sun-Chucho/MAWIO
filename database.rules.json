@@ -4,7 +4,7 @@
     ".write": false,
     "mawio": {
       "standard": {
-        "live": {
+        "current": {
           ".read": true,
           ".write": true
         }

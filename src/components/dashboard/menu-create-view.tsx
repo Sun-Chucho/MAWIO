@@ -128,23 +128,32 @@ export function MenuCreateView() {
       );
     }
 
-    const baristaSnapshot = readPosState<QueueTicket, PaymentRecord, BaristaMenuItem>(
-      STORAGE_BARISTA_STATE,
-      BARISTA_LEGACY.tickets,
-      BARISTA_LEGACY.seq,
-      BARISTA_LEGACY.payments,
-      BARISTA_LEGACY.menu,
-      BARISTA_LEGACY.defaultSeq,
-    );
-    setBaristaTickets(baristaSnapshot.tickets);
-    setBaristaPayments(baristaSnapshot.payments);
-    setBaristaSeq(baristaSnapshot.ticketSeq);
-    setBaristaMenuItems(baristaSnapshot.menuItems);
+    const applyBaristaSnapshot = () => {
+      const baristaSnapshot = readPosState<QueueTicket, PaymentRecord, BaristaMenuItem>(
+        STORAGE_BARISTA_STATE,
+        BARISTA_LEGACY.tickets,
+        BARISTA_LEGACY.seq,
+        BARISTA_LEGACY.payments,
+        BARISTA_LEGACY.menu,
+        BARISTA_LEGACY.defaultSeq,
+      );
+      setBaristaTickets(baristaSnapshot.tickets);
+      setBaristaPayments(baristaSnapshot.payments);
+      setBaristaSeq(baristaSnapshot.ticketSeq);
+      setBaristaMenuItems(baristaSnapshot.menuItems);
+    };
+
+    applyBaristaSnapshot();
     setAuditTrail(readJson<MenuAuditEntry[]>(STORAGE_MENU_AUDIT) ?? []);
 
-    return subscribeToSyncedStorageKey<MenuAuditEntry[]>(STORAGE_MENU_AUDIT, (value) => {
-      setAuditTrail(Array.isArray(value) ? value : readJson<MenuAuditEntry[]>(STORAGE_MENU_AUDIT) ?? []);
-    });
+    const unsubscribers = [
+      subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, applyBaristaSnapshot),
+      subscribeToSyncedStorageKey<MenuAuditEntry[]>(STORAGE_MENU_AUDIT, (value) => {
+        setAuditTrail(Array.isArray(value) ? value : readJson<MenuAuditEntry[]>(STORAGE_MENU_AUDIT) ?? []);
+      }),
+    ];
+
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
   }, []);
 
   const saveAuditEntry = (entry: MenuAuditEntry) => {

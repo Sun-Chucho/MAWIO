@@ -130,12 +130,12 @@ export function subscribeToConnectionStatus(onChange: (connected: boolean) => vo
 const FIREBASE_STORAGE_ROOT = "mawio";
 
 function toStoragePath(key: string) {
-  return `${FIREBASE_STORAGE_ROOT}/standard/live/${key.replace(/[.#$[\]/]/g, "-")}`;
+  return `${FIREBASE_STORAGE_ROOT}/standard/current/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
 // Fresh Standard cache namespace. The previous cache is intentionally not
 // migrated so stale business records cannot be uploaded after the clean start.
-const STANDARD_CACHE_PREFIX = "MAWIO_FRESH_";
+const STANDARD_CACHE_PREFIX = "MAWIO_CURRENT_";
 
 export function getStandardScopedLocalKey(baseKey: string): string {
   if (typeof window === "undefined") return baseKey;
@@ -143,7 +143,7 @@ export function getStandardScopedLocalKey(baseKey: string): string {
   return `${STANDARD_CACHE_PREFIX}${baseKey}`;
 }
 
-const STANDARD_CACHE_MIGRATION_MARKER = "orange-hotel-standard-fresh-cache-v1";
+const STANDARD_CACHE_MIGRATION_MARKER = "orange-hotel-standard-current-cache-v1";
 
 export function migrateLocalCacheToStandard() {
   if (typeof window === "undefined") return;

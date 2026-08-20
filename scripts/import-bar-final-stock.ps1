@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$WorkbookPath,
-  [string]$DatabaseBaseUrl = "https://mawio-67c3b-default-rtdb.firebaseio.com/mawio/standard/live"
+  [string]$DatabaseBaseUrl = "https://mawio-67c3b-default-rtdb.firebaseio.com/mawio/standard/current"
 )
 
 $ErrorActionPreference = "Stop"
