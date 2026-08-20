@@ -556,6 +556,15 @@ function mergeRecordsByIdWithRemoteWins(localRecords: unknown[], remoteRecords: 
   });
 }
 
+function filterRecordsAfterReset(records: unknown[], resetAt: number) {
+  if (!Number.isFinite(resetAt) || resetAt <= 0) return records;
+  return records.filter((record) => {
+    if (typeof record !== "object" || record === null) return false;
+    const createdAt = Number((record as { createdAt?: unknown }).createdAt);
+    return Number.isFinite(createdAt) && createdAt > resetAt;
+  });
+}
+
 function mergeArrayRecordsForSync(localValue: unknown, remoteValue: unknown) {
   if (!Array.isArray(localValue) || !Array.isArray(remoteValue)) return localValue;
   return mergeRecordsById(localValue, remoteValue);
@@ -575,17 +584,18 @@ function mergePosStateForSync(localValue: unknown, remoteValue: unknown) {
   const remotePayments = Array.isArray(remoteSnapshot.payments) ? remoteSnapshot.payments : [];
   const remoteCatalogWins = Number(remoteSnapshot.catalogRevision) > Number(localSnapshot.catalogRevision ?? 0);
   const remoteQueueResetWins = Number(remoteSnapshot.queueResetAt) > Number(localSnapshot.queueResetAt ?? 0);
+  const queueResetAt = Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0));
 
   return {
     ...remoteSnapshot,
     ...localSnapshot,
-    tickets: remoteQueueResetWins ? remoteTickets : mergeRecordsById(localTickets, remoteTickets),
+    tickets: filterRecordsAfterReset(remoteQueueResetWins ? remoteTickets : mergeRecordsById(localTickets, remoteTickets), queueResetAt),
     payments: mergeRecordsById(localPayments, remotePayments),
     menuItems: remoteCatalogWins
       ? (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : [])
       : (Array.isArray(localSnapshot.menuItems) ? localSnapshot.menuItems : []),
     catalogRevision: Math.max(Number(localSnapshot.catalogRevision ?? 0), Number(remoteSnapshot.catalogRevision ?? 0)),
-    queueResetAt: Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0)),
+    queueResetAt,
     ticketSeq: Math.max(
       Number.isFinite(localSnapshot.ticketSeq) ? Number(localSnapshot.ticketSeq) : 0,
       Number.isFinite(remoteSnapshot.ticketSeq) ? Number(remoteSnapshot.ticketSeq) : 0,
@@ -626,17 +636,18 @@ function mergePosStateForRemoteApply(localValue: unknown, remoteValue: unknown) 
   const remotePayments = Array.isArray(remoteSnapshot.payments) ? remoteSnapshot.payments : [];
   const remoteCatalogWins = Number(remoteSnapshot.catalogRevision) > Number(localSnapshot.catalogRevision ?? 0);
   const remoteQueueResetWins = Number(remoteSnapshot.queueResetAt) > Number(localSnapshot.queueResetAt ?? 0);
+  const queueResetAt = Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0));
 
   return {
     ...localSnapshot,
     ...remoteSnapshot,
-    tickets: remoteQueueResetWins ? remoteTickets : mergeRecordsByIdWithRemoteWins(localTickets, remoteTickets),
+    tickets: filterRecordsAfterReset(remoteQueueResetWins ? remoteTickets : mergeRecordsByIdWithRemoteWins(localTickets, remoteTickets), queueResetAt),
     payments: mergeRecordsByIdWithRemoteWins(localPayments, remotePayments),
     menuItems: remoteCatalogWins
       ? (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : [])
       : (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : localSnapshot.menuItems ?? []),
     catalogRevision: Math.max(Number(localSnapshot.catalogRevision ?? 0), Number(remoteSnapshot.catalogRevision ?? 0)),
-    queueResetAt: Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0)),
+    queueResetAt,
     ticketSeq: Math.max(
       Number.isFinite(localSnapshot.ticketSeq) ? Number(localSnapshot.ticketSeq) : 0,
       Number.isFinite(remoteSnapshot.ticketSeq) ? Number(remoteSnapshot.ticketSeq) : 0,
