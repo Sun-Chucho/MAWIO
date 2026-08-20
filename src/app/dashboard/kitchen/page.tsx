@@ -36,6 +36,7 @@ import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/ap
 
 type KitchenCategory = "all" | KitchenMenuCategory;
 type ServiceMode = "restaurant" | "room-service" | "take-away";
+type BookingEntryMode = "current" | "past";
 type KitchenPaymentMethod = "cash" | "card" | "mobile" | "credit";
 type KitchenPaymentStatus = "completed" | "credit";
 type SalesDateFilter = "all" | "date";
@@ -78,6 +79,7 @@ interface PendingOrder {
   destination: string;
   lines: Array<{ name: string; qty: number }>;
   total: number;
+  createdAt: number;
 }
 
 const STORAGE_TICKETS = "orange-hotel-kitchen-tickets";
@@ -85,6 +87,17 @@ const STORAGE_SEQ = "orange-hotel-kitchen-seq";
 const STORAGE_MENU = "orange-hotel-kitchen-menu";
 const STORAGE_CANCELLED = "orange-hotel-cancelled-tickets";
 const STORAGE_PAYMENTS = "orange-hotel-kitchen-payments";
+
+function getLocalDateValue(date = new Date()) {
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function getBookingTimestamp(mode: BookingEntryMode, dateValue: string, timeValue: string) {
+  if (mode === "current") return Date.now();
+  const timestamp = new Date(`${dateValue}T${timeValue || "12:00"}:00`).getTime();
+  return Number.isFinite(timestamp) ? timestamp : NaN;
+}
 
 function getNumber(value: unknown) {
   const parsed = Number(value);
@@ -118,6 +131,9 @@ export default function KitchenPage() {
   const [directorSalesDate, setDirectorSalesDate] = useState("");
   const [category, setCategory] = useState<KitchenCategory>("all");
   const [serviceMode, setServiceMode] = useState<ServiceMode>("restaurant");
+  const [bookingEntryMode, setBookingEntryMode] = useState<BookingEntryMode>("current");
+  const [pastBookingDate, setPastBookingDate] = useState(getLocalDateValue);
+  const [pastBookingTime, setPastBookingTime] = useState(() => new Date().toTimeString().slice(0, 5));
   const [searchTerm, setSearchTerm] = useState("");
   const [tableNumber, setTableNumber] = useState("");
   const [roomNumber, setRoomNumber] = useState("");
@@ -509,11 +525,18 @@ export default function KitchenPage() {
       return;
     }
 
+    const bookingTimestamp = getBookingTimestamp(bookingEntryMode, pastBookingDate, pastBookingTime);
+    if (!Number.isFinite(bookingTimestamp) || bookingTimestamp > Date.now()) {
+      window.alert("Choose a valid past booking date and time that is not in the future.");
+      return;
+    }
+
       setPendingOrder({
         mode: serviceMode,
         destination,
         lines: cart.map((line) => ({ name: line.item.name, qty: line.qty })),
         total: subtotal,
+        createdAt: bookingTimestamp,
       });
       setShowPayNowPopup(false);
       setShowSettlementPopup(true);
@@ -524,10 +547,11 @@ export default function KitchenPage() {
     if (!pendingOrder) return;
 
     const nextSeq = ticketSeq + 1;
-    const createdAt = Date.now();
+    const createdAt = pendingOrder.createdAt;
+    const recordedAt = Date.now();
     setTicketSeq(nextSeq);
 
-    const orderId = `kt-${createdAt}`;
+    const orderId = `kt-${createdAt}-${recordedAt}`;
     const code = `K-${nextSeq}`;
 
     const ticket: KitchenTicket = {
@@ -541,7 +565,7 @@ export default function KitchenPage() {
     };
 
     const paymentRecord: KitchenPaymentRecord = {
-      id: `kp-${createdAt}`,
+      id: `kp-${createdAt}-${recordedAt}`,
       ticketId: orderId,
       code,
       createdAt,
@@ -869,6 +893,24 @@ export default function KitchenPage() {
         <div className="xl:col-span-2 space-y-6">
           <Card className="border-none shadow-sm">
             <CardHeader className="space-y-4">
+              <Tabs value={bookingEntryMode} onValueChange={(value) => setBookingEntryMode(value as BookingEntryMode)}>
+                <TabsList className="w-full grid grid-cols-2 h-11 bg-muted/30 rounded-xl">
+                  <TabsTrigger value="current" className="font-black uppercase text-[10px] tracking-widest">Current Booking</TabsTrigger>
+                  <TabsTrigger value="past" className="font-black uppercase text-[10px] tracking-widest">Record Past Booking</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              {bookingEntryMode === "past" && (
+                <div className="grid grid-cols-1 gap-3 rounded-xl border bg-amber-50/60 p-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Booking Date</label>
+                    <Input type="date" max={getLocalDateValue()} value={pastBookingDate} onChange={(event) => setPastBookingDate(event.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Booking Time</label>
+                    <Input type="time" value={pastBookingTime} onChange={(event) => setPastBookingTime(event.target.value)} />
+                  </div>
+                </div>
+              )}
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input

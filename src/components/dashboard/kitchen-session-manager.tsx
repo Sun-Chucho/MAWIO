@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { InventoryItem } from "@/app/lib/mock-data";
-import { MainStoreItem, STORAGE_INVENTORY_ITEMS, STORAGE_MAIN_STORE_ITEMS } from "@/app/lib/inventory-transfer";
+import { getStoreItemLabel, MainStoreItem, normalizeStockName, STORAGE_INVENTORY_ITEMS, STORAGE_MAIN_STORE_ITEMS } from "@/app/lib/inventory-transfer";
 import {
   KitchenDailyStockHistoryEntry,
   KitchenDailyStockLine,
@@ -20,7 +20,7 @@ import {
   STORAGE_BARISTA_PURCHASE_HISTORY,
   STORAGE_BARISTA_PURCHASE_SESSION,
 } from "@/app/lib/kitchen-session-storage";
-import { readJson, writeJson } from "@/app/lib/storage";
+import { readJson, STORAGE_BARISTA_STATE, writeJson } from "@/app/lib/storage";
 import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,21 @@ import { Download, Eye } from "lucide-react";
 type KitchenWorkflowTab = "purchase" | "daily-stock";
 type CloseTarget = "purchase" | "daily-stock" | null;
 type SessionDepartment = "kitchen" | "barista";
+type BaristaMenuItem = {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+  prepMinutes: number;
+  barcode?: string;
+  buyingPrice?: number;
+};
+type BaristaPosSnapshot = {
+  tickets?: unknown[];
+  ticketSeq?: number;
+  payments?: unknown[];
+  menuItems?: BaristaMenuItem[];
+};
 type HistoryPreviewState =
   | { kind: "purchase"; entry: KitchenPurchaseHistoryEntry }
   | { kind: "daily-stock"; entry: KitchenDailyStockHistoryEntry }
@@ -86,17 +101,24 @@ function NumericInput({ value, onChange, ...props }: any) {
   );
 }
 
-function createPurchaseLine(item?: MainStoreItem): KitchenPurchaseLine {
+function createPurchaseLine(item?: MainStoreItem, menuItem?: BaristaMenuItem): KitchenPurchaseLine {
   return {
     id: `purchase-line-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     itemId: item?.id ?? null,
-    itemName: item?.name ?? "",
-    category: item?.subCategory ?? "",
+    itemName: menuItem?.name ?? item?.name ?? "",
+    category: menuItem?.category ?? item?.subCategory ?? "",
     unit: item?.unit ?? "kg",
     previousBalance: roundStock(item?.stock ?? 0),
     addedQty: 0,
     pricePerUnit: roundStock(item?.buyingPrice ?? 0),
+    sellingPrice: roundStock(menuItem?.price ?? item?.sellingPrice ?? 0),
   };
+}
+
+function findStoreItemForBaristaMenu(storeItems: MainStoreItem[], menuItem: BaristaMenuItem) {
+  const menuName = normalizeStockName(menuItem.name);
+  return storeItems.find((item) => normalizeStockName(getStoreItemLabel(item)) === menuName)
+    ?? storeItems.find((item) => normalizeStockName(item.name) === menuName);
 }
 
 function createDailyLine(item?: MainStoreItem): KitchenDailyStockLine {
@@ -260,6 +282,7 @@ export function KitchenSessionManager({
   const [activeTab, setActiveTab] = useState<KitchenWorkflowTab>("purchase");
   const [storeItems, setStoreItems] = useState<MainStoreItem[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [baristaMenuItems, setBaristaMenuItems] = useState<BaristaMenuItem[]>([]);
   const [purchaseSession, setPurchaseSession] = useState<KitchenPurchaseSession | null>(null);
   const [dailySession, setDailySession] = useState<KitchenDailyStockSession | null>(null);
   const [purchaseHistory, setPurchaseHistory] = useState<KitchenPurchaseHistoryEntry[]>([]);
@@ -294,6 +317,8 @@ export function KitchenSessionManager({
       const allStore = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
       setStoreItems(allStore.filter((item) => item.lane === department));
       setInventoryItems(readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? []);
+      const baristaSnapshot = readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE);
+      setBaristaMenuItems(Array.isArray(baristaSnapshot?.menuItems) ? baristaSnapshot.menuItems : []);
       setPurchaseSession(readJson<KitchenPurchaseSession>(purchaseSessionKey));
       setDailySession(readJson<KitchenDailyStockSession>(dailySessionKey));
       setPurchaseHistory(readJson<KitchenPurchaseHistoryEntry[]>(purchaseHistoryKey) ?? []);
@@ -304,6 +329,7 @@ export function KitchenSessionManager({
     const unsubscribers = [
       subscribeToSyncedStorageKey(STORAGE_MAIN_STORE_ITEMS, applySnapshot),
       subscribeToSyncedStorageKey(STORAGE_INVENTORY_ITEMS, applySnapshot),
+      subscribeToSyncedStorageKey(STORAGE_BARISTA_STATE, applySnapshot),
       subscribeToSyncedStorageKey(purchaseSessionKey, applySnapshot),
       subscribeToSyncedStorageKey(purchaseHistoryKey, applySnapshot),
       subscribeToSyncedStorageKey(dailySessionKey, applySnapshot),
@@ -335,7 +361,7 @@ export function KitchenSessionManager({
 
     return lines.filter((line) =>
       matchesSessionSearch(
-        [line.itemName, line.category, line.unit, line.previousBalance, line.addedQty, line.pricePerUnit],
+        [line.itemName, line.category, line.unit, line.previousBalance, line.addedQty, line.pricePerUnit, line.sellingPrice],
         query,
       ),
     );
@@ -419,7 +445,9 @@ export function KitchenSessionManager({
     const next: KitchenPurchaseSession = {
       id: `purchase-session-${Date.now()}`,
       startedAt: new Date().toISOString(),
-      lines: storeItems.map((item) => createPurchaseLine(item)),
+      lines: isBaristaDepartment
+        ? baristaMenuItems.map((menuItem) => createPurchaseLine(findStoreItemForBaristaMenu(storeItems, menuItem), menuItem))
+        : storeItems.map((item) => createPurchaseLine(item)),
     };
     persistPurchaseSession(next);
     toast({ title: `${departmentLabel} purchase session started` });
@@ -535,6 +563,7 @@ export function KitchenSessionManager({
                 unit: line.unit.trim() || item.unit,
                 stock: totalBalance,
                 buyingPrice: line.pricePerUnit > 0 ? line.pricePerUnit : item.buyingPrice,
+                sellingPrice: line.sellingPrice,
                 receivedStock: roundStock((item.receivedStock ?? 0) + line.addedQty),
               }
             : item,
@@ -553,6 +582,8 @@ export function KitchenSessionManager({
                   unit: refreshedStore.unit,
                   stock: totalBalance,
                   buyingPrice: refreshedStore.buyingPrice ?? item.buyingPrice,
+                  sellingPrice: line.sellingPrice,
+                  price: line.sellingPrice,
                   receivedStock: roundStock((item.receivedStock ?? 0) + line.addedQty),
                 }
               : item,
@@ -569,8 +600,8 @@ export function KitchenSessionManager({
               stock: totalBalance,
               totSold: 0,
               buyingPrice: refreshedStore.buyingPrice ?? line.pricePerUnit,
-              sellingPrice: 0,
-              price: 0,
+              sellingPrice: line.sellingPrice,
+              price: line.sellingPrice,
               status: "ACTIVE",
               minStock: refreshedStore.minStock,
               unit: refreshedStore.unit,
@@ -590,6 +621,7 @@ export function KitchenSessionManager({
             minStock: 1,
             lane: department,
             buyingPrice: line.pricePerUnit,
+            sellingPrice: line.sellingPrice,
             receivedStock: line.addedQty,
             damages: 0,
         };
@@ -606,8 +638,8 @@ export function KitchenSessionManager({
             stock: totalBalance,
             totSold: 0,
             buyingPrice: line.pricePerUnit,
-            sellingPrice: 0,
-            price: 0,
+            sellingPrice: line.sellingPrice,
+            price: line.sellingPrice,
             status: "ACTIVE",
             minStock: 1,
             unit: newStore.unit,
@@ -620,6 +652,31 @@ export function KitchenSessionManager({
     });
 
     applyStoreAndInventoryChanges(nextKitchenStore, nextInventory);
+
+    if (isBaristaDepartment) {
+      const snapshot = readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE) ?? {};
+      let nextMenu = Array.isArray(snapshot.menuItems) ? [...snapshot.menuItems] : [];
+      validLines.forEach((line) => {
+        const normalizedName = normalizeStockName(line.itemName);
+        const match = nextMenu.find((item) => normalizeStockName(item.name) === normalizedName);
+        if (match) {
+          nextMenu = nextMenu.map((item) => item.id === match.id
+            ? { ...item, name: line.itemName.trim(), price: line.sellingPrice, buyingPrice: line.pricePerUnit }
+            : item);
+        } else {
+          const allowedCategories = new Set(["espresso", "coffee", "tea", "cold", "snacks"]);
+          nextMenu.push({
+            id: `barista-menu-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            name: line.itemName.trim(),
+            price: line.sellingPrice,
+            buyingPrice: line.pricePerUnit,
+            category: allowedCategories.has(line.category.trim().toLowerCase()) ? line.category.trim().toLowerCase() : "coffee",
+            prepMinutes: 5,
+          });
+        }
+      });
+      writeJson(STORAGE_BARISTA_STATE, { ...snapshot, menuItems: nextMenu });
+    }
 
     writeJson(purchaseHistoryKey, [
       {
@@ -794,7 +851,7 @@ export function KitchenSessionManager({
       ["Approved By", entry.signoff.approvedBy],
       ["Cashier", entry.signoff.cashier],
       [],
-      ["Item", "Category", "Unit", "Balance", "Added", "Price", "Total Balance", "Amount"],
+      ["Item", "Category", "Unit", "Balance", "Added", "Buying Price", ...(isBaristaDepartment ? ["Selling Price"] : []), "Total Balance", "Amount"],
       ...entry.lines.map((line) => [
         line.itemName,
         line.category,
@@ -802,6 +859,7 @@ export function KitchenSessionManager({
         line.previousBalance,
         line.addedQty,
         line.pricePerUnit,
+        ...(isBaristaDepartment ? [line.sellingPrice ?? 0] : []),
         getPurchaseLineTotalBalance(line),
         roundStock(line.addedQty * line.pricePerUnit),
       ]),
@@ -900,7 +958,8 @@ export function KitchenSessionManager({
                   <TableHead>Unit</TableHead>
                   <TableHead>Balance</TableHead>
                   <TableHead>Added</TableHead>
-                  <TableHead>Price</TableHead>
+                  <TableHead>{isBaristaDepartment ? "Buying Price" : "Price"}</TableHead>
+                  {isBaristaDepartment && <TableHead>Selling Price</TableHead>}
                   <TableHead>Total Balance</TableHead>
                   <TableHead>Amount</TableHead>
                 </TableRow>
@@ -914,6 +973,7 @@ export function KitchenSessionManager({
                     <TableCell className="font-bold">{line.previousBalance}</TableCell>
                     <TableCell className="font-bold">{line.addedQty}</TableCell>
                     <TableCell className="font-bold">{formatMoney(line.pricePerUnit)}</TableCell>
+                    {isBaristaDepartment && <TableCell className="font-bold">{formatMoney(line.sellingPrice ?? 0)}</TableCell>}
                     <TableCell className="font-bold">{getPurchaseLineTotalBalance(line)}</TableCell>
                     <TableCell className="font-bold">{formatMoney(roundStock(line.addedQty * line.pricePerUnit))}</TableCell>
                   </TableRow>
@@ -1038,7 +1098,7 @@ export function KitchenSessionManager({
                   <CardTitle className="text-lg font-black uppercase">{purchaseCopy.title}</CardTitle>
                   <CardDescription>
                     {isBaristaDepartment
-                      ? "Search an existing item, enter only the added stock and price, then close the purchase sheet."
+                      ? "Search items from the Barista menu. Selling price is filled from Menu Create; enter the buying price and edit any field when needed."
                       : `Start a purchase sheet, enter added stock for the day, then close it to save history and update ${departmentLabel.toLowerCase()} inventory.`}
                   </CardDescription>
                 </div>
@@ -1069,11 +1129,9 @@ export function KitchenSessionManager({
                       placeholder="Search item"
                       className="max-w-md"
                     />
-                    {!isBaristaDepartment && (
-                      <Button variant="outline" onClick={addPurchaseLine} disabled={isDirector}>
-                        Add Item Row
-                      </Button>
-                    )}
+                    <Button variant="outline" onClick={addPurchaseLine} disabled={isDirector}>
+                      Add New Item
+                    </Button>
                   </div>
                   <Table>
                     <TableHeader>
@@ -1083,30 +1141,30 @@ export function KitchenSessionManager({
                         <TableHead>Unit</TableHead>
                         <TableHead>Balance</TableHead>
                         <TableHead>Add</TableHead>
-                        <TableHead>Price</TableHead>
+                        <TableHead>{isBaristaDepartment ? "Buying Price" : "Price"}</TableHead>
+                        {isBaristaDepartment && <TableHead>Selling Price</TableHead>}
                         <TableHead>Total Balance</TableHead>
                         <TableHead>Amount</TableHead>
-                        {!isBaristaDepartment && <TableHead className="text-right">Action</TableHead>}
+                        <TableHead className="text-right">Action</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredPurchaseLines.map((line) => {
                         const totalBalance = roundStock(line.previousBalance + line.addedQty);
                         const amount = roundStock(line.addedQty * line.pricePerUnit);
-                        const lockStaticPurchaseFields = isBaristaDepartment;
                         return (
                           <TableRow key={line.id}>
                             <TableCell>
-                              <Input value={line.itemName} onChange={(event) => updatePurchaseLine(line.id, "itemName", event.target.value)} disabled={lockStaticPurchaseFields} />
+                              <Input value={line.itemName} onChange={(event) => updatePurchaseLine(line.id, "itemName", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input value={line.category} onChange={(event) => updatePurchaseLine(line.id, "category", event.target.value)} disabled={lockStaticPurchaseFields} />
+                              <Input value={line.category} onChange={(event) => updatePurchaseLine(line.id, "category", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <Input value={line.unit} onChange={(event) => updatePurchaseLine(line.id, "unit", event.target.value)} disabled={lockStaticPurchaseFields} />
+                              <Input value={line.unit} onChange={(event) => updatePurchaseLine(line.id, "unit", event.target.value)} />
                             </TableCell>
                             <TableCell>
-                              <NumericInput min="0" value={line.previousBalance} onChange={(event: any) => updatePurchaseLine(line.id, "previousBalance", event.target.value)} disabled={lockStaticPurchaseFields} />
+                              <NumericInput min="0" value={line.previousBalance} onChange={(event: any) => updatePurchaseLine(line.id, "previousBalance", event.target.value)} />
                             </TableCell>
                             <TableCell>
                               <NumericInput min="0" value={line.addedQty} onChange={(event: any) => updatePurchaseLine(line.id, "addedQty", event.target.value)} />
@@ -1114,21 +1172,24 @@ export function KitchenSessionManager({
                             <TableCell>
                               <NumericInput min="0" value={line.pricePerUnit} onChange={(event: any) => updatePurchaseLine(line.id, "pricePerUnit", event.target.value)} />
                             </TableCell>
+                            {isBaristaDepartment && (
+                              <TableCell>
+                                <NumericInput min="0" value={line.sellingPrice ?? 0} onChange={(event: any) => updatePurchaseLine(line.id, "sellingPrice", event.target.value)} />
+                              </TableCell>
+                            )}
                             <TableCell className="font-bold">{totalBalance}</TableCell>
                             <TableCell className="font-bold">{formatMoney(amount)}</TableCell>
-                            {!isBaristaDepartment && (
                             <TableCell className="text-right">
                               <Button variant="ghost" size="sm" onClick={() => removePurchaseLine(line.id)} disabled={isDirector}>
                                 Remove
                               </Button>
                             </TableCell>
-                            )}
                           </TableRow>
                         );
                       })}
                       {filteredPurchaseLines.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={isBaristaDepartment ? 8 : 9} className="py-10 text-center text-xs font-black uppercase tracking-widest text-muted-foreground">
+                          <TableCell colSpan={isBaristaDepartment ? 10 : 9} className="py-10 text-center text-xs font-black uppercase tracking-widest text-muted-foreground">
                             No purchase rows match your search
                           </TableCell>
                         </TableRow>

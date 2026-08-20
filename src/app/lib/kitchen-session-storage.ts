@@ -23,6 +23,7 @@ export interface KitchenPurchaseLine {
   previousBalance: number;
   addedQty: number;
   pricePerUnit: number;
+  sellingPrice: number;
 }
 
 export interface KitchenPurchaseSession {

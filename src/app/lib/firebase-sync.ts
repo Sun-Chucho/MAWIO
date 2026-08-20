@@ -131,16 +131,17 @@ function toStoragePath(key: string) {
   return `${FIREBASE_STORAGE_ROOT}/standard/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
-// Keep the established Standard cache prefix so existing browser data continues
-// to hydrate into the sole supported database node.
+// Fresh Standard cache namespace. The previous cache is intentionally not
+// migrated so stale business records cannot be uploaded after the clean start.
+const STANDARD_CACHE_PREFIX = "MAWIO_FRESH_";
+
 export function getStandardScopedLocalKey(baseKey: string): string {
   if (typeof window === "undefined") return baseKey;
   if (!STANDARD_SCOPED_KEYS.has(baseKey)) return baseKey;
-  return `S_${baseKey}`;
+  return `${STANDARD_CACHE_PREFIX}${baseKey}`;
 }
 
-// One-time migration of pre-existing bare Standard values into `S_` keys.
-const STANDARD_CACHE_MIGRATION_MARKER = "orange-hotel-standard-cache-migration-v1";
+const STANDARD_CACHE_MIGRATION_MARKER = "orange-hotel-standard-fresh-cache-v1";
 
 export function migrateLocalCacheToStandard() {
   if (typeof window === "undefined") return;
@@ -148,24 +149,7 @@ export function migrateLocalCacheToStandard() {
   const markerKey = STANDARD_CACHE_MIGRATION_MARKER;
   if (window.localStorage.getItem(markerKey) === "1") return;
 
-  for (const baseKey of STANDARD_SCOPED_KEYS) {
-    const legacyKey = baseKey;
-    const taggedKey = `S_${baseKey}`;
-    if (legacyKey === taggedKey) continue;
-
-    try {
-      const legacyValue = window.localStorage.getItem(legacyKey);
-      if (legacyValue === null) continue;
-      // Don't clobber a tagged value that already exists (e.g. a partial prior run).
-      if (window.localStorage.getItem(taggedKey) === null) {
-        window.localStorage.setItem(taggedKey, legacyValue);
-      }
-      window.localStorage.removeItem(legacyKey);
-    } catch {
-      // Ignore quota/access errors; hydration will rebuild the tagged cache.
-    }
-  }
-
+  // Do not copy prior business data into the fresh namespace.
   window.localStorage.setItem(markerKey, "1");
 }
 
