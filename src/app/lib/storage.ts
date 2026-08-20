@@ -32,6 +32,8 @@ interface PosState<TTicket, TPayment, TMenu> {
   ticketSeq: number;
   payments: TPayment[];
   menuItems: TMenu[];
+  catalogRevision?: number;
+  queueResetAt?: number;
 }
 
 export function readJson<T>(key: string): T | null {
@@ -107,6 +109,8 @@ export function readPosState<TTicket, TPayment, TMenu>(
       ticketSeq: Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : defaultSeq,
       payments: Array.isArray(snapshot.payments) ? snapshot.payments : [],
       menuItems: Array.isArray(snapshot.menuItems) ? snapshot.menuItems : [],
+      catalogRevision: Number.isFinite(snapshot.catalogRevision) ? snapshot.catalogRevision : undefined,
+      queueResetAt: Number.isFinite(snapshot.queueResetAt) ? snapshot.queueResetAt : undefined,
     };
   }
 
@@ -131,5 +135,13 @@ export function writePosState<TTicket, TPayment, TMenu>(
   payments: TPayment[],
   menuItems: TMenu[],
 ) {
-  writeJson(storageKey, { tickets, ticketSeq, payments, menuItems });
+  const existing = readJson<Partial<PosState<TTicket, TPayment, TMenu>>>(storageKey);
+  writeJson(storageKey, {
+    tickets,
+    ticketSeq,
+    payments,
+    menuItems,
+    ...(Number.isFinite(existing?.catalogRevision) ? { catalogRevision: existing?.catalogRevision } : {}),
+    ...(Number.isFinite(existing?.queueResetAt) ? { queueResetAt: existing?.queueResetAt } : {}),
+  });
 }

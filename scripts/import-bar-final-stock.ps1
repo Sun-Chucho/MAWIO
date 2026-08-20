@@ -132,6 +132,8 @@ $nextBaristaState = [ordered]@{
   ticketSeq = if ($null -ne $existingBaristaState -and $existingBaristaState.ticketSeq) { [int]$existingBaristaState.ticketSeq } else { 1 }
   payments = if ($null -ne $existingBaristaState -and $existingBaristaState.payments) { @($existingBaristaState.payments) } else { @() }
   menuItems = $barMenu
+  catalogRevision = 2026082001
+  queueResetAt = if ($null -ne $existingBaristaState -and $existingBaristaState.queueResetAt) { [double]$existingBaristaState.queueResetAt } else { 0 }
 }
 
 Invoke-RestMethod -Method Put -Uri $storeUri -ContentType "application/json" -Body ($nextStore | ConvertTo-Json -Depth 20 -Compress) | Out-Null
