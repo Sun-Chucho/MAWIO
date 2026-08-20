@@ -1,4 +1,4 @@
-import { getDefaultRoomsForTier, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
+import { getDefaultRoomsForTier, Room } from "@/app/lib/mock-data";
 import { readJson, writeJson } from "@/app/lib/storage";
 
 interface ActiveBookingRoom {
@@ -15,10 +15,13 @@ export function getDefaultRooms(): Room[] {
 }
 
 function normalizeRoomRates(rooms: Room[]): Room[] {
-  const standardRoomNumbers = new Set(getDefaultRooms().map((room) => room.number));
+  const canonicalRooms = new Map(getDefaultRooms().map((room) => [room.number, room]));
   return rooms
-    .filter((room) => standardRoomNumbers.has(room.number))
-    .map((room) => ({ ...room, type: "Standard", price: STANDARD_ROOM_PRICE }));
+    .filter((room) => canonicalRooms.has(room.number))
+    .map((room) => {
+      const canonicalRoom = canonicalRooms.get(room.number)!;
+      return { ...room, type: canonicalRoom.type, price: canonicalRoom.price };
+    });
 }
 
 export function readRoomsState(): Room[] {

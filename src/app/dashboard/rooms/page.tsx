@@ -25,6 +25,7 @@ import { readCashierState, STORAGE_CASHIER_STATE, writeCashierState } from "@/ap
 import { toast } from "@/hooks/use-toast";
 
 type StatusFilter = "all" | Room["status"];
+type TypeFilter = "all" | Room["type"];
 
 interface BookingRoomRecord {
   id: string;
@@ -34,7 +35,7 @@ interface BookingRoomRecord {
 }
 
 function getRoomTypeLabel(type: Room["type"]) {
-  return type;
+  return type === "Platinum" ? "Premium" : type;
 }
 
 export default function RoomsPage() {
@@ -43,6 +44,7 @@ export default function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>(readRoomsState());
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
 
   useEffect(() => {
@@ -79,9 +81,10 @@ export default function RoomsPage() {
         room.type.toLowerCase().includes(normalizedSearch) ||
         getRoomTypeLabel(room.type).toLowerCase().includes(normalizedSearch);
       const inStatus = statusFilter === "all" || room.status === statusFilter;
-      return inSearch && inStatus;
+      const inType = typeFilter === "all" || room.type === typeFilter;
+      return inSearch && inStatus && inType;
     });
-  }, [rooms, searchTerm, statusFilter]);
+  }, [rooms, searchTerm, statusFilter, typeFilter]);
 
   const counts = useMemo(
     () => ({
@@ -289,6 +292,14 @@ export default function RoomsPage() {
           </div>
 
           <div className="flex flex-col gap-3">
+            <Tabs value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
+              <TabsList className="h-10">
+                <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>
+                <TabsTrigger value="Standard" className="text-[10px] font-black uppercase tracking-widest">Standard</TabsTrigger>
+                <TabsTrigger value="Platinum" className="text-[10px] font-black uppercase tracking-widest">Premium</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
             <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
               <TabsList className="h-10">
                 <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>

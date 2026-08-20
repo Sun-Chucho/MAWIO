@@ -20,6 +20,10 @@ import { toast } from "@/hooks/use-toast";
 const PAID_GATEWAY_STATES = new Set(["CAPTURED", "PURCHASED", "SUCCESS", "SUCCEEDED", "PAID", "AUTHORISED", "AUTHORIZED"]);
 const FAILED_GATEWAY_STATES = new Set(["FAILED", "DECLINED", "CANCELLED", "CANCELED", "REJECTED"]);
 
+function getWebsiteRoomTypeLabel(roomType: WebsiteBookingRecord["roomType"]) {
+  return roomType === "platinum" ? "Premium" : "Standard";
+}
+
 function getReceptionPaymentLabel(booking: WebsiteBookingRecord) {
   if (booking.paymentStatus === "paid") return "Paid";
   if (booking.paymentStatus === "failed") return "Payment Failed";
@@ -61,7 +65,7 @@ export default function WebsiteBookingsPage() {
         const latestBooking = newBookings[0];
         toast({
           title: "New website booking",
-          description: `${latestBooking.fullName} requested a ${latestBooking.roomType} room.`,
+          description: `${latestBooking.fullName} requested a ${getWebsiteRoomTypeLabel(latestBooking.roomType)} room.`,
         });
       }
     }
@@ -182,7 +186,7 @@ export default function WebsiteBookingsPage() {
                   <TableCell className="font-bold">
                     <p>{booking.fullName}</p>
                     <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                      {booking.guests} Guest{booking.guests === 1 ? "" : "s"} | {booking.roomType}
+                      {booking.guests} Guest{booking.guests === 1 ? "" : "s"} | {getWebsiteRoomTypeLabel(booking.roomType)}
                     </p>
                   </TableCell>
                   <TableCell className="font-bold">

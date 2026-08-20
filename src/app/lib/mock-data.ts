@@ -17,26 +17,40 @@ export const USERS: User[] = [
 export interface Room {
   id: string;
   number: string;
-  type: "Standard";
+  type: "Standard" | "Platinum";
   status: "available" | "occupied" | "cleaning" | "maintenance";
   price: number;
 }
 
 export const STANDARD_ROOM_PRICE = 20000;
+export const PREMIUM_ROOM_PRICE = 30000;
 
 const STANDARD_ROOM_NUMBERS = [
-  "101", "102", "103", "104", "105", "106", "107", "108", "109", "110", "111",
-  "112", "113", "114", "115", "116", "117", "118", "119", "120", "121", "122",
-  "123", "124", "125", "126", "127", "128", "129", "130", "131", "132", "133",
+  "101", "102", "103", "104", "105", "106", "107", "108", "111", "113", "133",
 ] as const;
 
-export const ROOMS: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({
+const PREMIUM_ROOM_NUMBERS = [
+  "109", "110", "112", "114", "115", "116", "117", "118", "119", "120", "121",
+  "122", "123", "124", "125", "126", "127", "128", "129", "130", "131", "132",
+] as const;
+
+const standardRooms: Room[] = STANDARD_ROOM_NUMBERS.map((number) => ({
   id: `r${number}`,
   number,
   type: "Standard",
   status: "available",
   price: STANDARD_ROOM_PRICE,
 }));
+
+const premiumRooms: Room[] = PREMIUM_ROOM_NUMBERS.map((number) => ({
+  id: `r${number}`,
+  number,
+  type: "Platinum",
+  status: "available",
+  price: PREMIUM_ROOM_PRICE,
+}));
+
+export const ROOMS: Room[] = [...standardRooms, ...premiumRooms];
 
 export function getDefaultRoomsForTier(): Room[] {
   return ROOMS.map((room) => ({ ...room }));

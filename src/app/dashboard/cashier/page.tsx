@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Role, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
+import { PREMIUM_ROOM_PRICE, Role, Room, STANDARD_ROOM_PRICE } from "@/app/lib/mock-data";
 import { readStoredRole } from "@/app/lib/auth";
 import { readCashierState, writeCashierState, getActiveCashierStateKey, getScopedStorageKey } from "@/app/lib/storage";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,7 +26,7 @@ import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/ap
 type PaymentMethod = "cash" | "card" | "mobile-money" | "credit";
 type TransactionTab = "completed" | "credit";
 type BookingDateFilter = "all" | "day" | "week" | "month";
-type RoomType = "standard";
+type RoomType = "standard" | "platinum";
 type TransactionStatus = "completed" | "credit" | "checked-out";
 type BookingCurrency = "TSh" | "$";
 type SpecialPackage =
@@ -59,32 +59,35 @@ interface BookingRecord {
   lastExtendedAt?: number;
 }
 
-function getFallbackRoomRate(): number {
-  return STANDARD_ROOM_PRICE;
+function getFallbackRoomRate(roomType: RoomType): number {
+  return roomType === "standard" ? STANDARD_ROOM_PRICE : PREMIUM_ROOM_PRICE;
 }
 
-function getRoomTypeLabel(): string {
-  return "Standard";
+function getRoomTypeLabel(roomType: RoomType): string {
+  return roomType === "standard" ? "Standard" : "Premium";
 }
 
 const SPECIAL_PACKAGES: Record<
   SpecialPackage,
-  { label: string; currency: BookingCurrency; rate: number }
+  { label: string; currency: BookingCurrency; standardRate: number; premiumRate: number }
 > = {
   "resident-with-breakfast": {
     label: "Resident with Breakfast",
     currency: "TSh",
-    rate: STANDARD_ROOM_PRICE,
+    standardRate: STANDARD_ROOM_PRICE,
+    premiumRate: PREMIUM_ROOM_PRICE,
   },
   "non-resident-with-breakfast": {
     label: "Non Resident with Breakfast",
     currency: "$",
-    rate: 60,
+    standardRate: 60,
+    premiumRate: 90,
   },
   "ninety-day-special": {
     label: "90 Day Special Package",
     currency: "TSh",
-    rate: STANDARD_ROOM_PRICE,
+    standardRate: STANDARD_ROOM_PRICE,
+    premiumRate: PREMIUM_ROOM_PRICE,
   },
 };
 
@@ -250,7 +253,11 @@ export default function BookingPage() {
     () => rooms.find((room) => room.number === selectedRoomNumber) ?? null,
     [rooms, selectedRoomNumber],
   );
-  const selectedRate = packageConfig?.rate ?? selectedRoom?.price ?? getFallbackRoomRate();
+  const selectedRate = packageConfig
+    ? roomType === "standard"
+      ? packageConfig.standardRate
+      : packageConfig.premiumRate
+    : selectedRoom?.price ?? getFallbackRoomRate(roomType);
   const rate = Number.isFinite(selectedRate) && selectedRate > 0 ? selectedRate : 0;
   const bookingCurrency: BookingCurrency = packageConfig?.currency ?? "TSh";
   const accountingCurrency = toAccountingCurrency(bookingCurrency);
@@ -283,8 +290,8 @@ export default function BookingPage() {
       setPackageRate("");
       return;
     }
-    setPackageRate(String(packageConfig.rate));
-  }, [packageConfig]);
+    setPackageRate(String(roomType === "standard" ? packageConfig.standardRate : packageConfig.premiumRate));
+  }, [packageConfig, roomType]);
 
   const completedTransactions = useMemo(
     () => transactions.filter((tx) => tx.status === "completed" || tx.status === "checked-out"),
@@ -308,8 +315,9 @@ export default function BookingPage() {
     [editingBookingId, transactions],
   );
   const roomPickerRooms = useMemo(() => {
-    return rooms.filter((room) => room.type === "Standard");
-  }, [activeBookedRoomNumbers, rooms]);
+    const wantedType = roomType === "standard" ? "Standard" : "Platinum";
+    return rooms.filter((room) => room.type === wantedType);
+  }, [roomType, rooms]);
   const availableRooms = useMemo(
     () =>
       roomPickerRooms.filter(
@@ -706,18 +714,32 @@ export default function BookingPage() {
 
           <div className="space-y-2">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Selected Room Type</p>
-            <div>
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setRoomType("standard");
+                  setSelectedRoomNumber("");
                   setRoomPickerOpen(true);
                 }}
                 className={`h-11 rounded-xl border text-[10px] font-black uppercase tracking-widest transition ${
                   roomType === "standard" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
                 }`}
               >
-                {getRoomTypeLabel()}
+                {getRoomTypeLabel("standard")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRoomType("platinum");
+                  setSelectedRoomNumber("");
+                  setRoomPickerOpen(true);
+                }}
+                className={`h-11 rounded-xl border text-[10px] font-black uppercase tracking-widest transition ${
+                  roomType === "platinum" ? "bg-yellow-500 text-black border-yellow-500" : "bg-white"
+                }`}
+              >
+                {getRoomTypeLabel("platinum")}
               </button>
             </div>
             {selectedRoomNumber && (
@@ -733,9 +755,9 @@ export default function BookingPage() {
               onChange={(event) => setSelectedPackage(event.target.value as SpecialPackage | "none")}
             >
               <option value="none">No special package</option>
-              <option value="resident-with-breakfast">Resident with Breakfast (TSh 20,000)</option>
-              <option value="non-resident-with-breakfast">Non Resident with Breakfast ($60)</option>
-              <option value="ninety-day-special">90 Day Special Package (TSh 20,000)</option>
+              <option value="resident-with-breakfast">Resident with Breakfast (Standard TSh 20,000 | Premium TSh 30,000)</option>
+              <option value="non-resident-with-breakfast">Non Resident with Breakfast (Standard $60 | Premium $90)</option>
+              <option value="ninety-day-special">90 Day Special Package (Standard TSh 20,000 | Premium TSh 30,000)</option>
             </select>
 
             {packageConfig && (
@@ -747,7 +769,7 @@ export default function BookingPage() {
                   placeholder="Rate per night"
                 />
                 <div className="rounded-md border px-3 py-2 text-sm font-black uppercase tracking-widest text-muted-foreground">
-                  {getRoomTypeLabel()} package rate: {packageConfig.currency} {rate.toLocaleString()}
+                  {getRoomTypeLabel(roomType)} package rate: {packageConfig.currency} {rate.toLocaleString()}
                   {packageConfig.currency === "$" ? ` | TSh ${accountingRate.toLocaleString()} accounting` : ""}
                 </div>
               </div>
@@ -939,7 +961,7 @@ export default function BookingPage() {
           <Card className="w-full max-w-2xl">
             <CardHeader>
               <CardTitle className="text-xl font-black uppercase tracking-tight">
-                {getRoomTypeLabel()} Rooms
+                {getRoomTypeLabel(roomType)} Rooms
               </CardTitle>
               <CardDescription>Select from all rooms. Only available rooms can be booked.</CardDescription>
             </CardHeader>

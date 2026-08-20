@@ -6,7 +6,7 @@ export const STORAGE_WEBSITE_BOOKINGS = "orange-hotel-website-bookings";
 const FIREBASE_STORAGE_ROOT = "mawio";
 
 export type WebsiteBookingStatus = "new" | "seen";
-export type WebsiteRoomType = "standard";
+export type WebsiteRoomType = "standard" | "platinum";
 export type WebsiteBookingBackendSyncStatus = "synced" | "pending" | "failed";
 export type WebsiteBookingPaymentStatus = "pending" | "paid" | "failed" | "cancelled" | "not_started";
 
