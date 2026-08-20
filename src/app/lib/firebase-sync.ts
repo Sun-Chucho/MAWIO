@@ -128,7 +128,7 @@ export function subscribeToConnectionStatus(onChange: (connected: boolean) => vo
 const FIREBASE_STORAGE_ROOT = "mawio";
 
 function toStoragePath(key: string) {
-  return `${FIREBASE_STORAGE_ROOT}/standard/${key.replace(/[.#$[\]/]/g, "-")}`;
+  return `${FIREBASE_STORAGE_ROOT}/standard/live/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
 // Fresh Standard cache namespace. The previous cache is intentionally not

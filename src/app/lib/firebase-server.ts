@@ -17,7 +17,7 @@ function getDatabaseBaseUrl() {
 }
 
 function toStoragePath(key: string) {
-  return `${FIREBASE_STORAGE_ROOT}/standard/${key.replace(/[.#$[\]/]/g, "-")}`;
+  return `${FIREBASE_STORAGE_ROOT}/standard/live/${key.replace(/[.#$[\]/]/g, "-")}`;
 }
 
 async function getAnonymousSession() {

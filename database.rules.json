@@ -4,8 +4,10 @@
     ".write": false,
     "mawio": {
       "standard": {
-        ".read": true,
-        ".write": true
+        "live": {
+          ".read": true,
+          ".write": true
+        }
       }
     }
   }
