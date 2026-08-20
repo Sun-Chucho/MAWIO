@@ -72,8 +72,8 @@ function Get-SubCategory([string]$name) {
 $storeUri = "$DatabaseBaseUrl/orange-hotel-main-store-items.json"
 $inventoryUri = "$DatabaseBaseUrl/orange-hotel-inventory-items.json"
 $baristaStateUri = "$DatabaseBaseUrl/orange-hotel-barista-state.json"
-$existingStore = @(Invoke-RestMethod -Method Get -Uri $storeUri)
-$existingInventory = @(Invoke-RestMethod -Method Get -Uri $inventoryUri)
+$existingStore = @((Invoke-RestMethod -Method Get -Uri $storeUri) | Where-Object { $_ -isnot [string] -and $null -ne $_.PSObject.Properties["lane"] })
+$existingInventory = @((Invoke-RestMethod -Method Get -Uri $inventoryUri) | Where-Object { $_ -isnot [string] -and $null -ne $_.PSObject.Properties["category"] })
 $existingBaristaState = Invoke-RestMethod -Method Get -Uri $baristaStateUri
 
 $barStore = @($sourceItems | ForEach-Object {
