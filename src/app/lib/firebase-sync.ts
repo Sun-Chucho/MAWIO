@@ -556,6 +556,32 @@ function mergeRecordsByIdWithRemoteWins(localRecords: unknown[], remoteRecords: 
   });
 }
 
+export function getPosPaymentSyncKey(record: unknown) {
+  if (typeof record !== "object" || record === null) return "";
+  const payment = record as {
+    id?: unknown;
+    code?: unknown;
+    createdAt?: unknown;
+    total?: unknown;
+    destination?: unknown;
+  };
+  const id = typeof payment.id === "string" ? payment.id.trim() : "";
+  if (id) return `id:${id}`;
+  return `legacy:${String(payment.code ?? "")}|${String(payment.createdAt ?? "")}|${String(payment.total ?? "")}|${String(payment.destination ?? "")}`;
+}
+
+function getDeletedPaymentKeys(snapshot: { deletedPaymentKeys?: unknown }) {
+  return Array.isArray(snapshot.deletedPaymentKeys)
+    ? snapshot.deletedPaymentKeys.filter((key): key is string => typeof key === "string" && key.length > 0)
+    : [];
+}
+
+function removeDeletedPayments(payments: unknown[], deletedPaymentKeys: string[]) {
+  if (deletedPaymentKeys.length === 0) return payments;
+  const deletedKeys = new Set(deletedPaymentKeys);
+  return payments.filter((payment) => !deletedKeys.has(getPosPaymentSyncKey(payment)));
+}
+
 function filterRecordsAfterReset(records: unknown[], resetAt: number) {
   if (!Number.isFinite(resetAt) || resetAt <= 0) return records;
   return records.filter((record) => {
@@ -571,8 +597,8 @@ function mergeArrayRecordsForSync(localValue: unknown, remoteValue: unknown) {
 }
 
 function mergePosStateForSync(localValue: unknown, remoteValue: unknown) {
-  const localSnapshot = localValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number };
-  const remoteSnapshot = remoteValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number };
+  const localSnapshot = localValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number; deletedPaymentKeys?: string[] };
+  const remoteSnapshot = remoteValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number; deletedPaymentKeys?: string[] };
 
   if (!localSnapshot || typeof localSnapshot !== "object" || !remoteSnapshot || typeof remoteSnapshot !== "object") {
     return localValue;
@@ -585,12 +611,14 @@ function mergePosStateForSync(localValue: unknown, remoteValue: unknown) {
   const remoteCatalogWins = Number(remoteSnapshot.catalogRevision) > Number(localSnapshot.catalogRevision ?? 0);
   const remoteQueueResetWins = Number(remoteSnapshot.queueResetAt) > Number(localSnapshot.queueResetAt ?? 0);
   const queueResetAt = Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0));
+  const deletedPaymentKeys = Array.from(new Set([...getDeletedPaymentKeys(localSnapshot), ...getDeletedPaymentKeys(remoteSnapshot)]));
 
   return {
     ...remoteSnapshot,
     ...localSnapshot,
     tickets: filterRecordsAfterReset(remoteQueueResetWins ? remoteTickets : mergeRecordsById(localTickets, remoteTickets), queueResetAt),
-    payments: mergeRecordsById(localPayments, remotePayments),
+    payments: removeDeletedPayments(mergeRecordsById(localPayments, remotePayments), deletedPaymentKeys),
+    deletedPaymentKeys,
     menuItems: remoteCatalogWins
       ? (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : [])
       : (Array.isArray(localSnapshot.menuItems) ? localSnapshot.menuItems : []),
@@ -623,8 +651,8 @@ function mergeCashierStateForRemoteApply(localValue: unknown, remoteValue: unkno
 }
 
 function mergePosStateForRemoteApply(localValue: unknown, remoteValue: unknown) {
-  const localSnapshot = localValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number };
-  const remoteSnapshot = remoteValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number };
+  const localSnapshot = localValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number; deletedPaymentKeys?: string[] };
+  const remoteSnapshot = remoteValue as { tickets?: unknown[]; ticketSeq?: number; payments?: unknown[]; menuItems?: unknown[]; catalogRevision?: number; queueResetAt?: number; deletedPaymentKeys?: string[] };
 
   if (!localSnapshot || typeof localSnapshot !== "object" || !remoteSnapshot || typeof remoteSnapshot !== "object") {
     return remoteValue;
@@ -637,12 +665,14 @@ function mergePosStateForRemoteApply(localValue: unknown, remoteValue: unknown) 
   const remoteCatalogWins = Number(remoteSnapshot.catalogRevision) > Number(localSnapshot.catalogRevision ?? 0);
   const remoteQueueResetWins = Number(remoteSnapshot.queueResetAt) > Number(localSnapshot.queueResetAt ?? 0);
   const queueResetAt = Math.max(Number(localSnapshot.queueResetAt ?? 0), Number(remoteSnapshot.queueResetAt ?? 0));
+  const deletedPaymentKeys = Array.from(new Set([...getDeletedPaymentKeys(localSnapshot), ...getDeletedPaymentKeys(remoteSnapshot)]));
 
   return {
     ...localSnapshot,
     ...remoteSnapshot,
     tickets: filterRecordsAfterReset(remoteQueueResetWins ? remoteTickets : mergeRecordsByIdWithRemoteWins(localTickets, remoteTickets), queueResetAt),
-    payments: mergeRecordsByIdWithRemoteWins(localPayments, remotePayments),
+    payments: removeDeletedPayments(mergeRecordsByIdWithRemoteWins(localPayments, remotePayments), deletedPaymentKeys),
+    deletedPaymentKeys,
     menuItems: remoteCatalogWins
       ? (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : [])
       : (Array.isArray(remoteSnapshot.menuItems) ? remoteSnapshot.menuItems : localSnapshot.menuItems ?? []),

@@ -1,4 +1,4 @@
-import { getStandardScopedLocalKey, removeStorageValueFromFirebase, syncStorageValueToFirebase } from "@/app/lib/firebase-sync";
+import { getPosPaymentSyncKey, getStandardScopedLocalKey, removeStorageValueFromFirebase, syncStorageValueToFirebase } from "@/app/lib/firebase-sync";
 import { sanitizeForStorage } from "@/app/lib/storage-sanitize";
 
 export const STORAGE_CASHIER_STATE = "orange-hotel-cashier-state";
@@ -34,6 +34,7 @@ interface PosState<TTicket, TPayment, TMenu> {
   menuItems: TMenu[];
   catalogRevision?: number;
   queueResetAt?: number;
+  deletedPaymentKeys?: string[];
 }
 
 export function readJson<T>(key: string): T | null {
@@ -104,13 +105,18 @@ export function readPosState<TTicket, TPayment, TMenu>(
 ): PosState<TTicket, TPayment, TMenu> {
   const snapshot = readJson<PosState<TTicket, TPayment, TMenu>>(storageKey);
   if (snapshot) {
+    const deletedPaymentKeys = Array.isArray(snapshot.deletedPaymentKeys) ? snapshot.deletedPaymentKeys : [];
+    const deletedPaymentKeySet = new Set(deletedPaymentKeys);
     return {
       tickets: Array.isArray(snapshot.tickets) ? snapshot.tickets : [],
       ticketSeq: Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : defaultSeq,
-      payments: Array.isArray(snapshot.payments) ? snapshot.payments : [],
+      payments: Array.isArray(snapshot.payments)
+        ? snapshot.payments.filter((payment) => !deletedPaymentKeySet.has(getPosPaymentSyncKey(payment)))
+        : [],
       menuItems: Array.isArray(snapshot.menuItems) ? snapshot.menuItems : [],
       catalogRevision: Number.isFinite(snapshot.catalogRevision) ? snapshot.catalogRevision : undefined,
       queueResetAt: Number.isFinite(snapshot.queueResetAt) ? snapshot.queueResetAt : undefined,
+      deletedPaymentKeys,
     };
   }
 
@@ -134,14 +140,18 @@ export function writePosState<TTicket, TPayment, TMenu>(
   ticketSeq: number,
   payments: TPayment[],
   menuItems: TMenu[],
+  deletedPaymentKeys?: string[],
 ) {
   const existing = readJson<Partial<PosState<TTicket, TPayment, TMenu>>>(storageKey);
+  const resolvedDeletedPaymentKeys = deletedPaymentKeys ?? existing?.deletedPaymentKeys ?? [];
+  const deletedPaymentKeySet = new Set(resolvedDeletedPaymentKeys);
   writeJson(storageKey, {
     tickets,
     ticketSeq,
-    payments,
+    payments: payments.filter((payment) => !deletedPaymentKeySet.has(getPosPaymentSyncKey(payment))),
     menuItems,
     ...(Number.isFinite(existing?.catalogRevision) ? { catalogRevision: existing?.catalogRevision } : {}),
     ...(Number.isFinite(existing?.queueResetAt) ? { queueResetAt: existing?.queueResetAt } : {}),
+    ...(resolvedDeletedPaymentKeys.length ? { deletedPaymentKeys: resolvedDeletedPaymentKeys } : {}),
   });
 }

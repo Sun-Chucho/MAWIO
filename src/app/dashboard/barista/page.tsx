@@ -32,7 +32,7 @@ import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-ma
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { toast } from "@/hooks/use-toast";
-import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { getPosPaymentSyncKey, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -998,11 +998,12 @@ export default function BaristaPage() {
 
       const nextPayments = snapshot.payments.filter((entry) => entry.id !== paymentId);
       const nextTickets = snapshot.tickets.filter((ticket) => ticket.id !== currentPayment.ticketId);
+      const deletedPaymentKeys = Array.from(new Set([...(snapshot.deletedPaymentKeys ?? []), getPosPaymentSyncKey(currentPayment)]));
       setBaristaPayments(nextPayments);
       setTickets(nextTickets);
       setTicketSeq(snapshot.ticketSeq);
       setStoredMenuItems(snapshot.menuItems);
-      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, nextPayments, snapshot.menuItems);
+      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, nextPayments, snapshot.menuItems, deletedPaymentKeys);
       toast({ title: "Barista sale deleted", description: `${currentPayment.code} was removed and sales totals were updated.` });
     } finally {
       setDeletingPaymentId(null);

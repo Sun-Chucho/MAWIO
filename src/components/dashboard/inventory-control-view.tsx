@@ -35,7 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, Eye, Pencil, Plus, Search, Trash2, XCircle } from "lucide-react";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { getPosPaymentSyncKey, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { toast } from "@/hooks/use-toast";
 
@@ -68,6 +68,7 @@ interface PosPaymentRecord {
 interface PosStateSnapshot {
   payments?: PosPaymentRecord[];
   menuItems?: Array<{ name: string; price: number }>;
+  deletedPaymentKeys?: string[];
 }
 
 const KITCHEN_CATEGORY_OPTIONS = [
@@ -182,11 +183,6 @@ function getNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getPaymentKey(payment: PosPaymentRecord) {
-  if (payment.id) return `id:${payment.id}`;
-  return `legacy:${payment.code ?? ""}|${payment.createdAt ?? ""}|${payment.total}|${payment.destination ?? ""}`;
-}
-
 function normalizePaymentLine(line: { name: string; qty: number }) {
   return {
     name: typeof line.name === "string" ? line.name : "Item",
@@ -196,6 +192,27 @@ function normalizePaymentLine(line: { name: string; qty: number }) {
 
 function getPaymentLines(payment: PosPaymentRecord) {
   return Array.isArray(payment.lines) ? payment.lines.map(normalizePaymentLine) : [];
+}
+
+function allocatePaymentAmounts(
+  payment: PosPaymentRecord,
+  lines: Array<{ name: string; qty: number }>,
+  getUnitPrice: (line: { name: string; qty: number }) => number,
+) {
+  const paymentTotal = getNumber(payment.total);
+  const weightedAmounts = lines.map((line) => line.qty * getUnitPrice(line));
+  const weightTotal = weightedAmounts.reduce((sum, amount) => sum + amount, 0);
+  const quantityTotal = lines.reduce((sum, line) => sum + line.qty, 0);
+  let allocatedAmount = 0;
+
+  return lines.map((line, index) => {
+    if (index === lines.length - 1) return paymentTotal - allocatedAmount;
+    const weight = weightTotal > 0 ? weightedAmounts[index] : line.qty;
+    const divisor = weightTotal > 0 ? weightTotal : quantityTotal;
+    const amount = Math.round(paymentTotal * (divisor > 0 ? weight / divisor : 0) * 100) / 100;
+    allocatedAmount += amount;
+    return amount;
+  });
 }
 
 function formatPaymentDate(createdAt: number | undefined) {
@@ -527,6 +544,25 @@ export function InventoryControlView({
     return priceMap;
   }, [baristaMenuItems]);
 
+  const baristaRevenueByItem = useMemo(() => {
+    const revenueMap = new Map<string, number>();
+
+    baristaPayments.forEach((payment) => {
+      const lines = getPaymentLines(payment);
+      const amounts = allocatePaymentAmounts(
+        payment,
+        lines,
+        (line) => baristaMenuPriceByItem.get(normalizeBaristaFinanceTarget(line.name)) ?? 0,
+      );
+      lines.forEach((line, index) => {
+        const key = normalizeBaristaFinanceTarget(line.name);
+        revenueMap.set(key, (revenueMap.get(key) ?? 0) + amounts[index]);
+      });
+    });
+
+    return revenueMap;
+  }, [baristaMenuPriceByItem, baristaPayments]);
+
   const baristaFinanceRows = useMemo(
     () =>
       baristaStore.map((item) => {
@@ -550,7 +586,7 @@ export function InventoryControlView({
                 : 0;
         const quantitySold = baristaSalesByItem.get(normalizeBaristaFinanceTarget(getStoreItemLabel(item))) ?? 0;
         const capital = item.stock * buyingPrice;
-        const revenue = quantitySold * sellingPrice;
+        const revenue = baristaRevenueByItem.get(normalizeBaristaFinanceTarget(getStoreItemLabel(item))) ?? 0;
         const profitLoss = revenue - capital;
 
         return {
@@ -564,7 +600,7 @@ export function InventoryControlView({
           profitLoss,
         };
       }),
-    [baristaMenuPriceByItem, baristaSalesByItem, baristaStore, items],
+    [baristaMenuPriceByItem, baristaRevenueByItem, baristaSalesByItem, baristaStore, items],
   );
 
   const baristaCapitalTotal = useMemo(
@@ -572,14 +608,8 @@ export function InventoryControlView({
     [baristaFinanceRows],
   );
   const baristaRevenueTotal = useMemo(
-    () => {
-      const itemizedRevenue = baristaFinanceRows.reduce((sum, item) => sum + item.revenue, 0);
-      const fallbackRevenue = baristaPayments
-        .filter((payment) => !Array.isArray(payment.lines) || payment.lines.length === 0)
-        .reduce((sum, payment) => sum + (payment.total || 0), 0);
-      return itemizedRevenue + fallbackRevenue;
-    },
-    [baristaFinanceRows, baristaPayments],
+    () => baristaPayments.reduce((sum, payment) => sum + getNumber(payment.total), 0),
+    [baristaPayments],
   );
   const baristaProfitLossTotal = useMemo(
     () => baristaRevenueTotal - baristaCapitalTotal,
@@ -600,7 +630,7 @@ export function InventoryControlView({
           return [
             {
               id: payment.id ?? `${payment.code ?? "sale"}-${payment.createdAt ?? 0}`,
-              paymentKey: getPaymentKey(payment),
+              paymentKey: getPosPaymentSyncKey(payment),
               actionRowSpan: 1,
               showDeleteAction: true,
               code: payment.code ?? "-",
@@ -615,17 +645,16 @@ export function InventoryControlView({
           ];
         }
 
-        return lines.map((line, index) => {
-          const price = baristaMenuPriceByItem.get(normalizeBaristaFinanceTarget(line.name)) ?? 0;
-          const amount = price > 0
-            ? line.qty * price
-            : lines.length === 1
-              ? getNumber(payment.total)
-              : 0;
+        const allocatedAmounts = allocatePaymentAmounts(
+          payment,
+          lines,
+          (line) => baristaMenuPriceByItem.get(normalizeBaristaFinanceTarget(line.name)) ?? 0,
+        );
 
+        return lines.map((line, index) => {
           return {
             id: `${payment.id ?? payment.code ?? "sale"}-${index}`,
-            paymentKey: getPaymentKey(payment),
+            paymentKey: getPosPaymentSyncKey(payment),
             actionRowSpan: lines.length,
             showDeleteAction: index === 0,
             code: payment.code ?? "-",
@@ -635,7 +664,7 @@ export function InventoryControlView({
             destination: payment.destination ?? payment.mode ?? "-",
             method: payment.method ?? "-",
             status: payment.status ?? "completed",
-            amount,
+            amount: allocatedAmounts[index],
           };
         });
       }),
@@ -653,7 +682,7 @@ export function InventoryControlView({
   const deleteBaristaSale = async (paymentKey: string) => {
     if (role !== "manager" || deletingBaristaPaymentKey) return;
 
-    const payment = baristaPayments.find((entry) => getPaymentKey(entry) === paymentKey);
+    const payment = baristaPayments.find((entry) => getPosPaymentSyncKey(entry) === paymentKey);
     if (!payment) return;
 
     const approved = await confirm({
@@ -667,7 +696,7 @@ export function InventoryControlView({
     try {
       const baristaState = readJson<PosStateSnapshot>(STORAGE_BARISTA_STATE);
       const currentPayments = Array.isArray(baristaState?.payments) ? baristaState.payments : [];
-      const currentPaymentIndex = currentPayments.findIndex((entry) => getPaymentKey(entry) === paymentKey);
+      const currentPaymentIndex = currentPayments.findIndex((entry) => getPosPaymentSyncKey(entry) === paymentKey);
       const currentPayment = currentPaymentIndex >= 0 ? currentPayments[currentPaymentIndex] : undefined;
 
       if (!currentPayment) {
@@ -677,7 +706,8 @@ export function InventoryControlView({
 
       const nextPayments = [...currentPayments];
       nextPayments.splice(currentPaymentIndex, 1);
-      writeJson(STORAGE_BARISTA_STATE, { ...baristaState, payments: nextPayments });
+      const deletedPaymentKeys = Array.from(new Set([...(baristaState?.deletedPaymentKeys ?? []), paymentKey]));
+      writeJson(STORAGE_BARISTA_STATE, { ...baristaState, payments: nextPayments, deletedPaymentKeys });
       setBaristaPayments(nextPayments);
       toast({ title: "Barista sale deleted", description: `${currentPayment.code ?? "Sale"} was removed and the totals were updated.` });
     } finally {
