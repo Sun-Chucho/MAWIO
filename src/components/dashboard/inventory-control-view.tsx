@@ -37,6 +37,7 @@ import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
+import { toast } from "@/hooks/use-toast";
 
 export type InventoryTab =
   | "kitchen-stock"
@@ -181,6 +182,11 @@ function getNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function getPaymentKey(payment: PosPaymentRecord) {
+  if (payment.id) return `id:${payment.id}`;
+  return `legacy:${payment.code ?? ""}|${payment.createdAt ?? ""}|${payment.total}|${payment.destination ?? ""}`;
+}
+
 function normalizePaymentLine(line: { name: string; qty: number }) {
   return {
     name: typeof line.name === "string" ? line.name : "Item",
@@ -280,6 +286,7 @@ export function InventoryControlView({
   const [baristaPurchaseHistory, setBaristaPurchaseHistory] = useState<KitchenPurchaseHistoryEntry[]>([]);
   const [historyPreview, setHistoryPreview] = useState<HistoryPreview>(null);
   const [inventorySearchTerm, setInventorySearchTerm] = useState("");
+  const [deletingBaristaPaymentKey, setDeletingBaristaPaymentKey] = useState<string | null>(null);
 
   const [kitchenName, setKitchenName] = useState("");
   const [kitchenSubCategory, setKitchenSubCategory] = useState("");
@@ -593,6 +600,9 @@ export function InventoryControlView({
           return [
             {
               id: payment.id ?? `${payment.code ?? "sale"}-${payment.createdAt ?? 0}`,
+              paymentKey: getPaymentKey(payment),
+              actionRowSpan: 1,
+              showDeleteAction: true,
               code: payment.code ?? "-",
               createdAt: payment.createdAt,
               itemName: "Unitemized sale",
@@ -615,6 +625,9 @@ export function InventoryControlView({
 
           return {
             id: `${payment.id ?? payment.code ?? "sale"}-${index}`,
+            paymentKey: getPaymentKey(payment),
+            actionRowSpan: lines.length,
+            showDeleteAction: index === 0,
             code: payment.code ?? "-",
             createdAt: payment.createdAt,
             itemName: line.name,
@@ -636,6 +649,41 @@ export function InventoryControlView({
     () => filteredBaristaSalesPayments.reduce((sum, payment) => sum + getNumber(payment.total), 0),
     [filteredBaristaSalesPayments],
   );
+
+  const deleteBaristaSale = async (paymentKey: string) => {
+    if (role !== "manager" || deletingBaristaPaymentKey) return;
+
+    const payment = baristaPayments.find((entry) => getPaymentKey(entry) === paymentKey);
+    if (!payment) return;
+
+    const approved = await confirm({
+      title: "Delete Barista Sale",
+      description: `Delete sale ${payment.code ?? "-"} for TSh ${getNumber(payment.total).toLocaleString()}? This permanently removes the full sale and updates the sales totals.`,
+      actionLabel: "Delete Sale",
+    });
+    if (!approved) return;
+
+    setDeletingBaristaPaymentKey(paymentKey);
+    try {
+      const baristaState = readJson<PosStateSnapshot>(STORAGE_BARISTA_STATE);
+      const currentPayments = Array.isArray(baristaState?.payments) ? baristaState.payments : [];
+      const currentPaymentIndex = currentPayments.findIndex((entry) => getPaymentKey(entry) === paymentKey);
+      const currentPayment = currentPaymentIndex >= 0 ? currentPayments[currentPaymentIndex] : undefined;
+
+      if (!currentPayment) {
+        toast({ title: "Sale already removed", description: `${payment.code ?? "Sale"} is no longer in Barista sales.` });
+        return;
+      }
+
+      const nextPayments = [...currentPayments];
+      nextPayments.splice(currentPaymentIndex, 1);
+      writeJson(STORAGE_BARISTA_STATE, { ...baristaState, payments: nextPayments });
+      setBaristaPayments(nextPayments);
+      toast({ title: "Barista sale deleted", description: `${currentPayment.code ?? "Sale"} was removed and the totals were updated.` });
+    } finally {
+      setDeletingBaristaPaymentKey(null);
+    }
+  };
 
   const resetStoreForm = (lane: StoreLane) => {
     if (lane === "kitchen") {
@@ -1333,6 +1381,7 @@ export function InventoryControlView({
                 <TableHead className="font-black uppercase text-[10px] tracking-widest">Method</TableHead>
                 <TableHead className="font-black uppercase text-[10px] tracking-widest">Status</TableHead>
                 <TableHead className="font-black uppercase text-[10px] tracking-widest">Amount</TableHead>
+                {role === "manager" && <TableHead className="font-black uppercase text-[10px] tracking-widest">Action</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1346,11 +1395,26 @@ export function InventoryControlView({
                   <TableCell className="font-black uppercase text-[10px] tracking-widest">{row.method}</TableCell>
                   <TableCell className="font-black uppercase text-[10px] tracking-widest">{row.status}</TableCell>
                   <TableCell className="font-bold">TSh {row.amount.toLocaleString()}</TableCell>
+                  {role === "manager" && row.showDeleteAction && (
+                    <TableCell rowSpan={row.actionRowSpan} className="align-top">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-red-600 hover:border-red-300 hover:text-red-700"
+                        disabled={deletingBaristaPaymentKey !== null}
+                        onClick={() => deleteBaristaSale(row.paymentKey)}
+                        aria-label={`Delete sale ${row.code}`}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        {deletingBaristaPaymentKey === row.paymentKey ? "Deleting..." : "Delete"}
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
               {baristaSalesRows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                  <TableCell colSpan={role === "manager" ? 9 : 8} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
                     No sales found for this filter
                   </TableCell>
                 </TableRow>
