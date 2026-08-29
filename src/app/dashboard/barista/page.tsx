@@ -292,6 +292,7 @@ export default function BaristaPage() {
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
   const [passwordFeedback, setPasswordFeedback] = useState<{ type: "error" | "success"; message: string } | null>(null);
   const [deliveringTicketId, setDeliveringTicketId] = useState<string | null>(null);
+  const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
 
   const roomSuggestions = useMemo(() => ROOMS.map((room) => room.number), []);
   const tableSuggestions = useMemo(
@@ -906,6 +907,9 @@ export default function BaristaPage() {
           return [
             {
               id: payment.id,
+              paymentId: payment.id,
+              actionRowSpan: 1,
+              showDeleteAction: true,
               code: payment.code,
               createdAt: payment.createdAt,
               itemName: "Unitemized sale",
@@ -928,6 +932,9 @@ export default function BaristaPage() {
 
           return {
             id: `${payment.id}-${index}`,
+            paymentId: payment.id,
+            actionRowSpan: payment.lines?.length ?? 1,
+            showDeleteAction: index === 0,
             code: payment.code,
             createdAt: payment.createdAt,
             itemName: line.name,
@@ -949,6 +956,58 @@ export default function BaristaPage() {
     () => filteredDirectorSalesPayments.reduce((sum, payment) => sum + payment.total, 0),
     [filteredDirectorSalesPayments],
   );
+
+  const deleteBaristaSale = async (paymentId: string) => {
+    if (!isManager || deletingPaymentId) return;
+
+    const payment = baristaPayments.find((entry) => entry.id === paymentId);
+    if (!payment) return;
+
+    const approved = await confirm({
+      title: "Delete Barista Sale",
+      description: `Delete sale ${payment.code} for TSh ${payment.total.toLocaleString()}? This removes the full sale from reports and restores stock when it came from a current POS order.`,
+      actionLabel: "Delete Sale",
+    });
+    if (!approved) return;
+
+    setDeletingPaymentId(paymentId);
+    try {
+      const activeBaristaKey = getActiveBaristaStateKey();
+      const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+        activeBaristaKey,
+        STORAGE_TICKETS,
+        STORAGE_SEQ,
+        STORAGE_PAYMENTS,
+        STORAGE_MENU,
+        490,
+      );
+      const currentPayment = snapshot.payments.find((entry) => entry.id === paymentId);
+      if (!currentPayment) {
+        toast({ title: "Sale already removed", description: `${payment.code} is no longer in Barista sales.` });
+        return;
+      }
+
+      const linkedTicket = snapshot.tickets.find((ticket) => ticket.id === currentPayment.ticketId);
+      if (linkedTicket && Array.isArray(linkedTicket.lines) && linkedTicket.lines.length > 0) {
+        const stockResult = updateBaristaStoreStock(linkedTicket.lines, "restore");
+        if (!stockResult.ok) {
+          window.alert(stockResult.error);
+          return;
+        }
+      }
+
+      const nextPayments = snapshot.payments.filter((entry) => entry.id !== paymentId);
+      const nextTickets = snapshot.tickets.filter((ticket) => ticket.id !== currentPayment.ticketId);
+      setBaristaPayments(nextPayments);
+      setTickets(nextTickets);
+      setTicketSeq(snapshot.ticketSeq);
+      setStoredMenuItems(snapshot.menuItems);
+      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, nextPayments, snapshot.menuItems);
+      toast({ title: "Barista sale deleted", description: `${currentPayment.code} was removed and sales totals were updated.` });
+    } finally {
+      setDeletingPaymentId(null);
+    }
+  };
 
   const renderFinanceTable = () => (
     <Card className="border-none shadow-sm">
@@ -1061,6 +1120,7 @@ export default function BaristaPage() {
                 <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Method</TableHead>
                 <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Status</TableHead>
                 <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Amount</TableHead>
+                {isManager && <TableHead className="font-black uppercase text-[10px] tracking-widest h-12">Action</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1074,11 +1134,26 @@ export default function BaristaPage() {
                   <TableCell className="font-black uppercase text-[10px] tracking-widest">{row.method}</TableCell>
                   <TableCell className="font-black uppercase text-[10px] tracking-widest">{row.status}</TableCell>
                   <TableCell className="font-bold">TSh {row.amount.toLocaleString()}</TableCell>
+                  {isManager && row.showDeleteAction && (
+                    <TableCell rowSpan={row.actionRowSpan} className="align-top">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-red-600 hover:border-red-300 hover:text-red-700"
+                        disabled={deletingPaymentId !== null}
+                        onClick={() => deleteBaristaSale(row.paymentId)}
+                        aria-label={`Delete sale ${row.code}`}
+                      >
+                        <Trash2 className="mr-1 h-3 w-3" />
+                        {deletingPaymentId === row.paymentId ? "Deleting..." : "Delete"}
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
               {directorSalesRows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
+                  <TableCell colSpan={isManager ? 9 : 8} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
                     No sales found for this filter
                   </TableCell>
                 </TableRow>
