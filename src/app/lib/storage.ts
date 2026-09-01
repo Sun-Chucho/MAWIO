@@ -35,6 +35,25 @@ interface PosState<TTicket, TPayment, TMenu> {
   catalogRevision?: number;
   queueResetAt?: number;
   deletedPaymentKeys?: string[];
+  deletedTicketIds?: string[];
+  appliedCatalogStockMutationIds?: string[];
+  catalogStockMutationFingerprints?: Record<string, string>;
+}
+
+function getPosTicketId(ticket: unknown) {
+  if (typeof ticket !== "object" || ticket === null) return "";
+  const id = (ticket as { id?: unknown }).id;
+  return typeof id === "string" ? id : "";
+}
+
+function getPosCatalogRevision(value: unknown) {
+  const revision = Number(value);
+  return Number.isFinite(revision) && revision >= 0 ? revision : 0;
+}
+
+function getPosQueueResetAt(value: unknown) {
+  const resetAt = Number(value);
+  return Number.isFinite(resetAt) && resetAt >= 0 ? resetAt : 0;
 }
 
 export function readJson<T>(key: string): T | null {
@@ -53,7 +72,12 @@ export function writeJson<T>(key: string, value: T) {
   const sanitizedValue = sanitizeForStorage(value);
   const scopedKey = getStandardScopedLocalKey(key);
   const serializedValue = JSON.stringify(sanitizedValue);
-  if (localStorage.getItem(scopedKey) === serializedValue) return;
+  if (localStorage.getItem(scopedKey) === serializedValue) {
+    // A prior direct + fallback attempt may have failed. Re-sending an
+    // explicit identical write makes the operation retryable.
+    syncStorageValueToFirebase(key, sanitizedValue);
+    return;
+  }
   // Write only to the active Standard cache namespace.
   localStorage.setItem(scopedKey, serializedValue);
   window.dispatchEvent(new CustomEvent("orange-hotel-storage-updated", { detail: { key } }));
@@ -107,16 +131,27 @@ export function readPosState<TTicket, TPayment, TMenu>(
   if (snapshot) {
     const deletedPaymentKeys = Array.isArray(snapshot.deletedPaymentKeys) ? snapshot.deletedPaymentKeys : [];
     const deletedPaymentKeySet = new Set(deletedPaymentKeys);
+    const deletedTicketIds = Array.isArray(snapshot.deletedTicketIds) ? snapshot.deletedTicketIds : [];
+    const deletedTicketIdSet = new Set(deletedTicketIds);
+    const appliedCatalogStockMutationIds = Array.isArray(snapshot.appliedCatalogStockMutationIds)
+      ? snapshot.appliedCatalogStockMutationIds
+      : [];
+    const catalogStockMutationFingerprints = snapshot.catalogStockMutationFingerprints ?? {};
     return {
-      tickets: Array.isArray(snapshot.tickets) ? snapshot.tickets : [],
+      tickets: Array.isArray(snapshot.tickets)
+        ? snapshot.tickets.filter((ticket) => !deletedTicketIdSet.has(getPosTicketId(ticket)))
+        : [],
       ticketSeq: Number.isFinite(snapshot.ticketSeq) ? snapshot.ticketSeq : defaultSeq,
       payments: Array.isArray(snapshot.payments)
         ? snapshot.payments.filter((payment) => !deletedPaymentKeySet.has(getPosPaymentSyncKey(payment)))
         : [],
       menuItems: Array.isArray(snapshot.menuItems) ? snapshot.menuItems : [],
-      catalogRevision: Number.isFinite(snapshot.catalogRevision) ? snapshot.catalogRevision : undefined,
-      queueResetAt: Number.isFinite(snapshot.queueResetAt) ? snapshot.queueResetAt : undefined,
+      catalogRevision: getPosCatalogRevision(snapshot.catalogRevision),
+      queueResetAt: getPosQueueResetAt(snapshot.queueResetAt),
       deletedPaymentKeys,
+      deletedTicketIds,
+      appliedCatalogStockMutationIds,
+      catalogStockMutationFingerprints,
     };
   }
 
@@ -131,6 +166,12 @@ export function readPosState<TTicket, TPayment, TMenu>(
     ticketSeq: Number.isFinite(parsedSeq) && parsedSeq > 0 ? parsedSeq : defaultSeq,
     payments: Array.isArray(payments) ? payments : [],
     menuItems: Array.isArray(menuItems) ? menuItems : [],
+    catalogRevision: 0,
+    queueResetAt: 0,
+    deletedPaymentKeys: [],
+    deletedTicketIds: [],
+    appliedCatalogStockMutationIds: [],
+    catalogStockMutationFingerprints: {},
   };
 }
 
@@ -141,17 +182,70 @@ export function writePosState<TTicket, TPayment, TMenu>(
   payments: TPayment[],
   menuItems: TMenu[],
   deletedPaymentKeys?: string[],
+  deletedTicketIds?: string[],
 ) {
   const existing = readJson<Partial<PosState<TTicket, TPayment, TMenu>>>(storageKey);
   const resolvedDeletedPaymentKeys = deletedPaymentKeys ?? existing?.deletedPaymentKeys ?? [];
   const deletedPaymentKeySet = new Set(resolvedDeletedPaymentKeys);
+  const resolvedDeletedTicketIds = deletedTicketIds ?? existing?.deletedTicketIds ?? [];
+  const deletedTicketIdSet = new Set(resolvedDeletedTicketIds);
+  const appliedCatalogStockMutationIds = existing?.appliedCatalogStockMutationIds ?? [];
+  const catalogStockMutationFingerprints = existing?.catalogStockMutationFingerprints ?? {};
+  // Ticket/payment writes must not put a stale React menu back into the shared
+  // snapshot. Intentional catalog changes use writePosCatalogState below.
+  const resolvedMenuItems = Array.isArray(existing?.menuItems) ? existing.menuItems : menuItems;
   writeJson(storageKey, {
-    tickets,
+    tickets: tickets.filter((ticket) => !deletedTicketIdSet.has(getPosTicketId(ticket))),
+    ticketSeq,
+    payments: payments.filter((payment) => !deletedPaymentKeySet.has(getPosPaymentSyncKey(payment))),
+    menuItems: resolvedMenuItems,
+    catalogRevision: getPosCatalogRevision(existing?.catalogRevision),
+    queueResetAt: getPosQueueResetAt(existing?.queueResetAt),
+    ...(resolvedDeletedPaymentKeys.length ? { deletedPaymentKeys: resolvedDeletedPaymentKeys } : {}),
+    ...(resolvedDeletedTicketIds.length ? { deletedTicketIds: resolvedDeletedTicketIds } : {}),
+    ...(appliedCatalogStockMutationIds.length ? { appliedCatalogStockMutationIds } : {}),
+    ...(Object.keys(catalogStockMutationFingerprints).length ? { catalogStockMutationFingerprints } : {}),
+  });
+}
+
+/**
+ * Persist an intentional POS menu mutation without replacing newer queue or
+ * payment data from another view. The monotonic revision makes this catalog
+ * authoritative over stale operational writes on other devices.
+ */
+export function writePosCatalogState<TTicket, TPayment, TMenu>(
+  storageKey: string,
+  fallbackTickets: TTicket[],
+  fallbackTicketSeq: number,
+  fallbackPayments: TPayment[],
+  menuItems: TMenu[],
+  fallbackDeletedPaymentKeys?: string[],
+) {
+  const existing = readJson<Partial<PosState<TTicket, TPayment, TMenu>>>(storageKey);
+  const tickets = Array.isArray(existing?.tickets) ? existing.tickets : fallbackTickets;
+  const payments = Array.isArray(existing?.payments) ? existing.payments : fallbackPayments;
+  const ticketSeq = Math.max(
+    Number.isFinite(existing?.ticketSeq) ? Number(existing?.ticketSeq) : 0,
+    Number.isFinite(fallbackTicketSeq) ? fallbackTicketSeq : 0,
+  );
+  const deletedPaymentKeys = existing?.deletedPaymentKeys ?? fallbackDeletedPaymentKeys ?? [];
+  const deletedPaymentKeySet = new Set(deletedPaymentKeys);
+  const deletedTicketIds = existing?.deletedTicketIds ?? [];
+  const deletedTicketIdSet = new Set(deletedTicketIds);
+  const appliedCatalogStockMutationIds = existing?.appliedCatalogStockMutationIds ?? [];
+  const catalogStockMutationFingerprints = existing?.catalogStockMutationFingerprints ?? {};
+  const currentRevision = getPosCatalogRevision(existing?.catalogRevision);
+
+  writeJson(storageKey, {
+    tickets: tickets.filter((ticket) => !deletedTicketIdSet.has(getPosTicketId(ticket))),
     ticketSeq,
     payments: payments.filter((payment) => !deletedPaymentKeySet.has(getPosPaymentSyncKey(payment))),
     menuItems,
-    ...(Number.isFinite(existing?.catalogRevision) ? { catalogRevision: existing?.catalogRevision } : {}),
-    ...(Number.isFinite(existing?.queueResetAt) ? { queueResetAt: existing?.queueResetAt } : {}),
-    ...(resolvedDeletedPaymentKeys.length ? { deletedPaymentKeys: resolvedDeletedPaymentKeys } : {}),
+    catalogRevision: Math.max(Date.now(), currentRevision + 1),
+    queueResetAt: getPosQueueResetAt(existing?.queueResetAt),
+    ...(deletedPaymentKeys.length ? { deletedPaymentKeys } : {}),
+    ...(deletedTicketIds.length ? { deletedTicketIds } : {}),
+    ...(appliedCatalogStockMutationIds.length ? { appliedCatalogStockMutationIds } : {}),
+    ...(Object.keys(catalogStockMutationFingerprints).length ? { catalogStockMutationFingerprints } : {}),
   });
 }

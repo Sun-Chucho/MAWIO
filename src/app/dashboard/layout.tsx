@@ -3,15 +3,15 @@
 import { useState, useEffect } from 'react';
 import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
-import { DEFAULT_KITCHEN_MENU, mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
+import { mergeKitchenMenuItems } from "@/app/lib/kitchen-menu";
 import { InventoryItem, Role } from "@/app/lib/mock-data";
 import { ExpenseRecord, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { KitchenPurchaseHistoryEntry, STORAGE_KITCHEN_PURCHASE_HISTORY } from "@/app/lib/kitchen-session-storage";
 import { MainStoreItem, STORAGE_MAIN_STORE_ITEMS, getStoreItemLabel, normalizeBaristaProductTarget, normalizeStockName } from "@/app/lib/inventory-transfer";
-import { getTotLimit } from "@/app/lib/barista-stock";
+import { getBaristaMenuLabel } from "@/app/lib/barista-stock";
 import { normalizeRole } from "@/app/lib/auth";
 import { hydrateStorageKeyFromFirebase } from "@/app/lib/firebase-sync";
-import { readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeJson, writePosState } from "@/app/lib/storage";
+import { readJson, readPosState, STORAGE_BARISTA_STATE, STORAGE_KITCHEN_STATE, writeJson, writePosCatalogState, writePosState } from "@/app/lib/storage";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, Home, Hotel, Search, User, Clock, Menu, WalletCards, ReceiptText, Package } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -77,9 +77,11 @@ const STARTUP_SYNC_KEYS_BY_ROLE: Record<Role, string[]> = {
 
 async function hydrateStartupStateForRole(role: Role) {
   const keys = STARTUP_SYNC_KEYS_BY_ROLE[role] ?? ["orange-hotel-settings", "orange-hotel-login-profiles"];
-  await Promise.race([
-    Promise.all(keys.map((key) => hydrateStorageKeyFromFirebase(key).catch(() => undefined))),
-    new Promise((resolve) => window.setTimeout(resolve, 5000)),
+  return Promise.race([
+    Promise.all(keys.map((key) => hydrateStorageKeyFromFirebase(key)))
+      .then((results) => results.every((result) => result.ok))
+      .catch(() => false),
+    new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 5000)),
   ]);
 }
 const KALUSE_KIANGI_BOOKING_FIX_KEY = "orange-hotel-kaluse-kiangi-booking-fix-v2";
@@ -248,9 +250,7 @@ function syncBaristaMenuItemsWithSharedData(
     }
 
     const nextName = storeMatch
-      ? getTotLimit(storeMatch) > 0
-        ? `${getStoreItemLabel(storeMatch)} (TOTS)`
-        : getStoreItemLabel(storeMatch)
+      ? getBaristaMenuLabel(storeMatch)
       : inventoryMatch
         ? getBaristaInventoryLabel(inventoryMatch)
         : item.name;
@@ -528,18 +528,8 @@ function applyBusinessCorrections() {
   }
 
   if (!localStorage.getItem(KITCHEN_TRANSACTIONS_RESET_KEY)) {
-    const kitchenSnapshot = readPosState<unknown, unknown, unknown>(
-      STORAGE_KITCHEN_STATE,
-      "orange-hotel-kitchen-tickets",
-      "orange-hotel-kitchen-seq",
-      "orange-hotel-kitchen-payments",
-      "orange-hotel-kitchen-menu",
-      300,
-    );
-    const cleanedKitchenMenu = mergeKitchenMenuItems(kitchenSnapshot.menuItems as Parameters<typeof mergeKitchenMenuItems>[0], {
-      stripDefaultMenu: true,
-    });
-    writePosState(STORAGE_KITCHEN_STATE, [], kitchenSnapshot.ticketSeq, [], cleanedKitchenMenu);
+    // This was a one-off demo reset. A browser-local marker cannot safely
+    // authorize a shared catalog mutation on a newly installed terminal.
     localStorage.setItem(KITCHEN_TRANSACTIONS_RESET_KEY, "1");
   }
 
@@ -552,13 +542,19 @@ function applyBusinessCorrections() {
       "orange-hotel-kitchen-menu",
       300,
     );
-    writePosState(
-      STORAGE_KITCHEN_STATE,
-      kitchenSnapshot.tickets,
-      kitchenSnapshot.ticketSeq,
-      kitchenSnapshot.payments,
-      DEFAULT_KITCHEN_MENU,
-    );
+    const normalizedKitchenMenu = mergeKitchenMenuItems(kitchenSnapshot.menuItems as Parameters<typeof mergeKitchenMenuItems>[0]);
+    if (
+      (kitchenSnapshot.catalogRevision ?? 0) === 0 &&
+      JSON.stringify(normalizedKitchenMenu) !== JSON.stringify(kitchenSnapshot.menuItems)
+    ) {
+      writePosCatalogState(
+        STORAGE_KITCHEN_STATE,
+        kitchenSnapshot.tickets,
+        kitchenSnapshot.ticketSeq,
+        kitchenSnapshot.payments,
+        normalizedKitchenMenu,
+      );
+    }
     localStorage.setItem(KITCHEN_MENU_PRICE_FIX_KEY, "1");
   }
 
@@ -919,11 +915,16 @@ function applyBusinessCorrections() {
       490,
     );
 
-    if (inventoryItems.length > 0 && storeItems.length > 0 && baristaSnapshot.menuItems.length > 0) {
+    if (
+      (baristaSnapshot.catalogRevision ?? 0) === 0 &&
+      inventoryItems.length > 0 &&
+      storeItems.length > 0 &&
+      baristaSnapshot.menuItems.length > 0
+    ) {
       const nextMenuItems = syncBaristaMenuItemsWithSharedData(baristaSnapshot.menuItems, inventoryItems, storeItems);
 
       if (JSON.stringify(nextMenuItems) !== JSON.stringify(baristaSnapshot.menuItems)) {
-        writePosState(STORAGE_BARISTA_STATE, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, baristaSnapshot.payments, nextMenuItems);
+        writePosCatalogState(STORAGE_BARISTA_STATE, baristaSnapshot.tickets, baristaSnapshot.ticketSeq, baristaSnapshot.payments, nextMenuItems);
       }
     }
 
@@ -946,8 +947,11 @@ function applyBusinessCorrections() {
       (readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? []).filter((item) => item.lane === "barista"),
     );
 
-    if (JSON.stringify(nextMenuItems) !== JSON.stringify(baristaSnapshot.menuItems)) {
-      writePosState(
+    if (
+      (baristaSnapshot.catalogRevision ?? 0) === 0 &&
+      JSON.stringify(nextMenuItems) !== JSON.stringify(baristaSnapshot.menuItems)
+    ) {
+      writePosCatalogState(
         STORAGE_BARISTA_STATE,
         baristaSnapshot.tickets,
         baristaSnapshot.ticketSeq,
@@ -1025,8 +1029,11 @@ function applyBusinessCorrections() {
       writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
     }
 
-    if (JSON.stringify(nextMenuItems) !== JSON.stringify(baristaSnapshot.menuItems)) {
-      writePosState(
+    if (
+      (baristaSnapshot.catalogRevision ?? 0) === 0 &&
+      JSON.stringify(nextMenuItems) !== JSON.stringify(baristaSnapshot.menuItems)
+    ) {
+      writePosCatalogState(
         STORAGE_BARISTA_STATE,
         baristaSnapshot.tickets,
         baristaSnapshot.ticketSeq,
@@ -1136,8 +1143,11 @@ export default function DashboardLayout({
       setMounted(true);
 
       try {
-        await hydrateStartupStateForRole(savedRole);
+        const startupHydrated = await hydrateStartupStateForRole(savedRole);
         if (cancelled) return;
+        // Browser-local migration flags may never authorize a shared menu
+        // mutation until the current remote state has been verified.
+        if (!startupHydrated) return;
         applyBusinessCorrections();
       } catch (error) {
         console.error("Dashboard hydration failed", error);

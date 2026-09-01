@@ -16,6 +16,14 @@ export interface MainStoreItem {
   totSold?: number;
   damages?: number;
   receivedStock?: number;
+  /** Internal idempotency markers for POS stock effects. */
+  appliedStockEffectIds?: string[];
+  /** Inventory mirror deltas keyed by the same POS stock effect ID. */
+  stockInventoryDeltas?: Record<string, number>;
+  /** Append-only effects let concurrent terminals merge stock changes safely. */
+  stockEffects?: Record<string, { kind: "units" | "tots"; delta: number; totLimit?: number; requiresEffectId?: string; inverseOfEffectId?: string }>;
+  /** Compensating effects waiting for their referenced checkout effect. */
+  pendingStockEffects?: Record<string, { kind: "units" | "tots"; delta: number; totLimit?: number; requiresEffectId?: string; inverseOfEffectId?: string }>;
 }
 
 export interface StoreMovementLog {
@@ -77,7 +85,9 @@ const SODA_SIZE_RULES = [
 ] as const;
 
 export function normalizeBaristaProductTarget(value: string) {
-  const normalized = normalizeStockName(value.replace(/\s*\(?TOTS?\)?$/i, "").trim());
+  const normalized = normalizeStockName(
+    value.replace(/\s*(?:\((?:TOT|TOTS)\)|\b(?:TOT|TOTS)\b)/gi, " ").trim(),
+  );
 
   if (normalized === "soda" || normalized.startsWith("soda ")) {
     if (normalized.includes("350ml")) return "soda 350ml";

@@ -74,6 +74,12 @@ export interface InventoryItem {
   unit: string;
   damages?: number;
   receivedStock?: number;
+  /** Internal idempotency markers for POS stock effects. */
+  appliedStockEffectIds?: string[];
+  /** Append-only effects let concurrent terminals merge stock changes safely. */
+  stockEffects?: Record<string, { kind: "units" | "tots"; delta: number; totLimit?: number; requiresEffectId?: string; inverseOfEffectId?: string }>;
+  /** Compensating effects waiting for their referenced checkout effect. */
+  pendingStockEffects?: Record<string, { kind: "units" | "tots"; delta: number; totLimit?: number; requiresEffectId?: string; inverseOfEffectId?: string }>;
 }
 
 export const INVENTORY: InventoryItem[] = [];

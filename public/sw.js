@@ -1,4 +1,4 @@
-const CACHE_NAME = "orange-hotel-shell-v5";
+const CACHE_NAME = "orange-hotel-shell-v6";
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
@@ -8,6 +8,14 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (!request.url.startsWith(self.location.origin)) {
+    return;
+  }
+
+  // Storage/API responses are live business data and must never come from the
+  // app-shell cache. This is especially important when Firebase falls back to
+  // the server sync route.
+  if (new URL(request.url).pathname.startsWith("/api/")) {
+    event.respondWith(fetch(request));
     return;
   }
 

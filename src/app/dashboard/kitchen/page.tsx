@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { readStoredRole } from "@/app/lib/auth";
 import {
   KITCHEN_CATEGORY_LABELS,
@@ -11,8 +11,8 @@ import {
 } from "@/app/lib/kitchen-menu";
 import { InventoryItem, ROOMS, Role } from "@/app/lib/mock-data";
 import {
-  adjustInventoryQuantity,
   MainStoreItem,
+  normalizeStockName,
   STORAGE_MAIN_STORE_ITEMS,
   STORAGE_INVENTORY_ITEMS,
   STORAGE_STORE_MOVEMENTS,
@@ -21,7 +21,8 @@ import {
   StoreUsageLog,
 } from "@/app/lib/inventory-transfer";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
-import { getActiveKitchenStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
+import { buildCheckoutFingerprint, clearCheckoutAttempt, getPendingCheckoutAttempts, persistCheckoutAttempt, resolveCheckoutId } from "@/app/lib/pos-checkout-attempt";
+import { getActiveKitchenStateKey, readJson, readPosState, writeJson } from "@/app/lib/storage";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +33,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { ChefHat, Minus, Plus, Receipt, Search, Trash2, CheckCircle2, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitBaristaStockEffectsAndLogs, commitPosStateWithCatalogRevision, commitSyncedStorageValueAndWait, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 
 type KitchenCategory = "all" | KitchenMenuCategory;
 type ServiceMode = "restaurant" | "room-service" | "take-away";
@@ -46,13 +47,23 @@ interface CartLine {
   qty: number;
 }
 
+interface KitchenOrderLine {
+  name: string;
+  qty: number;
+  // Optional so tickets/payments written before catalog-aware pricing remain
+  // readable. Every new Kitchen POS order persists all three price fields.
+  itemId?: string;
+  unitPrice?: number;
+  lineTotal?: number;
+}
+
 interface KitchenTicket {
   id: string;
   code: string;
   createdAt: number;
   mode: ServiceMode;
   destination: string;
-  lines: Array<{ name: string; qty: number }>;
+  lines: KitchenOrderLine[];
   total: number;
 }
 
@@ -68,18 +79,22 @@ interface KitchenPaymentRecord {
   createdAt: number;
   mode: ServiceMode;
   destination: string;
-  lines?: Array<{ name: string; qty: number }>;
+  lines?: KitchenOrderLine[];
   total: number;
   status: KitchenPaymentStatus;
   method: KitchenPaymentMethod;
 }
 
 interface PendingOrder {
+  checkoutId: string;
+  checkoutFingerprint: string;
   mode: ServiceMode;
   destination: string;
-  lines: Array<{ name: string; qty: number }>;
+  lines: KitchenOrderLine[];
   total: number;
   createdAt: number;
+  isPastBooking: boolean;
+  catalogRevision: number;
 }
 
 const STORAGE_TICKETS = "orange-hotel-kitchen-tickets";
@@ -87,6 +102,7 @@ const STORAGE_SEQ = "orange-hotel-kitchen-seq";
 const STORAGE_MENU = "orange-hotel-kitchen-menu";
 const STORAGE_CANCELLED = "orange-hotel-cancelled-tickets";
 const STORAGE_PAYMENTS = "orange-hotel-kitchen-payments";
+const STORAGE_CHECKOUT_ATTEMPT = "orange-hotel-kitchen-checkout-attempt";
 
 function getLocalDateValue(date = new Date()) {
   const offset = date.getTimezoneOffset() * 60_000;
@@ -97,6 +113,12 @@ function getBookingTimestamp(mode: BookingEntryMode, dateValue: string, timeValu
   if (mode === "current") return Date.now();
   const timestamp = new Date(`${dateValue}T${timeValue || "12:00"}:00`).getTime();
   return Number.isFinite(timestamp) ? timestamp : NaN;
+}
+
+function createCheckoutId(prefix: string) {
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${randomPart}`;
 }
 
 function getNumber(value: unknown) {
@@ -121,6 +143,135 @@ function formatPaymentDate(createdAt: number | undefined) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
 }
 
+function normalizeKitchenCatalogForRevision(
+  menuItems: KitchenMenuItem[],
+  catalogRevision: number | undefined,
+) {
+  return mergeKitchenMenuItems(menuItems, {
+    // Revision zero is the only confirmed first/legacy catalog state. Once a
+    // catalog has been published, a missing built-in represents an intentional
+    // deletion and must remain missing.
+    includeDefaultMenu: (catalogRevision ?? 0) === 0,
+  });
+}
+
+function resolveCartAgainstCatalog(cart: CartLine[], catalog: KitchenMenuItem[]) {
+  const catalogById = new Map(catalog.map((item) => [item.id, item]));
+  const lines: CartLine[] = [];
+  const removedNames: string[] = [];
+  const changedNames: string[] = [];
+
+  cart.forEach((line) => {
+    const currentItem = catalogById.get(line.item.id);
+    if (!currentItem) {
+      removedNames.push(line.item.name);
+      return;
+    }
+
+    if (currentItem.name !== line.item.name || currentItem.price !== line.item.price) {
+      changedNames.push(currentItem.name);
+    }
+
+    lines.push({
+      ...line,
+      item: currentItem,
+    });
+  });
+
+  return {
+    lines,
+    removedNames,
+    changedNames,
+    changed:
+      removedNames.length > 0 ||
+      lines.some((line, index) => line.item !== cart[index]?.item || line.qty !== cart[index]?.qty),
+  };
+}
+
+function buildKitchenOrderLines(cart: CartLine[]): KitchenOrderLine[] {
+  return cart.map((line) => ({
+    itemId: line.item.id,
+    name: line.item.name,
+    qty: line.qty,
+    unitPrice: line.item.price,
+    lineTotal: line.item.price * line.qty,
+  }));
+}
+
+function resolveOrderLinesAgainstCatalog(lines: KitchenOrderLine[], catalog: KitchenMenuItem[]) {
+  const catalogById = new Map(catalog.map((item) => [item.id, item]));
+  const catalogByName = new Map(catalog.map((item) => [item.name.trim().toLowerCase(), item]));
+  const nextLines: KitchenOrderLine[] = [];
+  const removedNames: string[] = [];
+  const changedNames: string[] = [];
+
+  lines.forEach((line) => {
+    // The exact-name fallback is only for a pending order created by older
+    // client code during a hot deployment. New orders always carry itemId.
+    const currentItem = line.itemId
+      ? catalogById.get(line.itemId)
+      : catalogByName.get(line.name.trim().toLowerCase());
+    if (!currentItem) {
+      removedNames.push(line.name);
+      return;
+    }
+
+    const qty = Number.isFinite(line.qty) && line.qty > 0 ? line.qty : 0;
+    const nextLine: KitchenOrderLine = {
+      itemId: currentItem.id,
+      name: currentItem.name,
+      qty,
+      unitPrice: currentItem.price,
+      lineTotal: currentItem.price * qty,
+    };
+    if (
+      line.itemId !== nextLine.itemId ||
+      line.name !== nextLine.name ||
+      line.unitPrice !== nextLine.unitPrice ||
+      line.lineTotal !== nextLine.lineTotal
+    ) {
+      changedNames.push(currentItem.name);
+    }
+    nextLines.push(nextLine);
+  });
+
+  return {
+    lines: nextLines,
+    removedNames,
+    changedNames,
+    total: nextLines.reduce((sum, line) => sum + (line.lineTotal ?? 0), 0),
+  };
+}
+
+function allocateKitchenPaymentAmounts(
+  payment: KitchenPaymentRecord,
+  lines: KitchenOrderLine[],
+  getLegacyUnitPrice: (line: KitchenOrderLine) => number,
+) {
+  const paymentTotal = getNumber(payment.total);
+  const weights = lines.map((line) => {
+    if (typeof line.lineTotal === "number" && Number.isFinite(line.lineTotal) && line.lineTotal >= 0) {
+      return line.lineTotal;
+    }
+    if (typeof line.unitPrice === "number" && Number.isFinite(line.unitPrice) && line.unitPrice >= 0) {
+      return line.unitPrice * line.qty;
+    }
+    return getLegacyUnitPrice(line) * line.qty;
+  });
+  const weightTotal = weights.reduce((sum, amount) => sum + amount, 0);
+  const quantityTotal = lines.reduce((sum, line) => sum + line.qty, 0);
+  let allocated = 0;
+
+  return lines.map((line, index) => {
+    if (index === lines.length - 1) return paymentTotal - allocated;
+    const divisor = weightTotal > 0 ? weightTotal : quantityTotal;
+    const weight = weightTotal > 0 ? weights[index] : line.qty;
+    const amount = Math.round(paymentTotal * (divisor > 0 ? (weight ?? 0) / divisor : 0) * 100) / 100;
+    allocated += amount;
+    return amount;
+  });
+}
+
 export default function KitchenPage() {
   const isDirector = useIsDirector();
   const { confirm, dialog } = useConfirmDialog();
@@ -140,7 +291,7 @@ export default function KitchenPage() {
 
   const [cart, setCart] = useState<CartLine[]>([]);
   const [tickets, setTickets] = useState<KitchenTicket[]>([]);
-  const [ticketSeq, setTicketSeq] = useState(300);
+  const [, setTicketSeq] = useState(300);
   const [menuItems, setMenuItems] = useState<KitchenMenuItem[]>([]);
   const [kitchenPayments, setKitchenPayments] = useState<KitchenPaymentRecord[]>([]);
   const [posHydrated, setPosHydrated] = useState(false);
@@ -150,10 +301,27 @@ export default function KitchenPage() {
   const [usageLogs, setUsageLogs] = useState<StoreUsageLog[]>([]);
   const [useEntryId, setUseEntryId] = useState("");
   const [useQty, setUseQty] = useState("1");
+  const [cartCatalogNotice, setCartCatalogNotice] = useState("");
 
   const [pendingOrder, setPendingOrder] = useState<PendingOrder | null>(null);
   const [showSettlementPopup, setShowSettlementPopup] = useState(false);
   const [showPayNowPopup, setShowPayNowPopup] = useState(false);
+  const checkoutInFlightRef = useRef(false);
+  const authoritativeHydrationRef = useRef(false);
+  const [checkoutInFlight, setCheckoutInFlight] = useState(false);
+
+  useEffect(() => {
+    if (!posHydrated) return;
+    const committedAttempts = getPendingCheckoutAttempts(STORAGE_CHECKOUT_ATTEMPT)
+      .filter((attempt) => kitchenPayments.some((payment) => payment.id === `kp-${attempt.checkoutId}`));
+    if (committedAttempts.length === 0) return;
+    committedAttempts.forEach((attempt) => clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, attempt.checkoutId));
+    setCart([]);
+    setPendingOrder(null);
+    setShowSettlementPopup(false);
+    setShowPayNowPopup(false);
+    window.alert("A previously interrupted Kitchen checkout was already recorded. It has been recovered without creating a duplicate.");
+  }, [kitchenPayments, posHydrated]);
 
   const roomSuggestions = useMemo(() => ROOMS.map((room) => room.number), []);
   const tableSuggestions = useMemo(
@@ -183,22 +351,75 @@ export default function KitchenPage() {
       setTickets(snapshot.tickets);
       setTicketSeq(snapshot.ticketSeq);
       setKitchenPayments(snapshot.payments);
-      const nextMenuItems = mergeKitchenMenuItems(snapshot.menuItems);
+      const nextMenuItems = normalizeKitchenCatalogForRevision(
+        snapshot.menuItems,
+        snapshot.catalogRevision,
+      );
       setMenuItems(nextMenuItems);
-      setPosHydrated(true);
-      if (JSON.stringify(nextMenuItems) !== JSON.stringify(snapshot.menuItems)) {
-        writePosState(activeKitchenKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, nextMenuItems);
-      }
+      if (authoritativeHydrationRef.current) setPosHydrated(true);
     };
 
-    void hydrateStorageKeyFromFirebase(activeKitchenKey).finally(applyKitchenSnapshot);
+    let retryTimer: number | null = null;
+    const hydrateKitchen = async () => {
+      const result = await hydrateStorageKeyFromFirebase(activeKitchenKey);
+      if (cancelled) return;
+      if (result.ok) {
+        authoritativeHydrationRef.current = true;
+        applyKitchenSnapshot();
+        return;
+      }
+      retryTimer = window.setTimeout(hydrateKitchen, 5000);
+    };
+
+    void hydrateKitchen();
     const unsubscribeKitchen = subscribeToSyncedStorageKey(activeKitchenKey, applyKitchenSnapshot);
 
     return () => {
       cancelled = true;
+      authoritativeHydrationRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       unsubscribeKitchen();
     };
   }, []);
+
+  // The rendered cart is derived from the live menu immediately. The effect
+  // then commits that resolved cart so deleted dishes cannot survive in state
+  // and price/name changes cannot be charged from an old item object.
+  const cartResolution = useMemo(() => resolveCartAgainstCatalog(cart, menuItems), [cart, menuItems]);
+  const liveCart = cartResolution.lines;
+
+  useEffect(() => {
+    if (!cartResolution.changed) return;
+    setCart(cartResolution.lines);
+    if (cartResolution.removedNames.length > 0) {
+      setCartCatalogNotice(`Removed unavailable menu item(s): ${cartResolution.removedNames.join(", ")}. Review the ticket before ordering.`);
+      return;
+    }
+    if (cartResolution.changedNames.length > 0) {
+      setCartCatalogNotice(`Menu pricing was updated for: ${cartResolution.changedNames.join(", ")}. The ticket now uses the current price.`);
+    }
+  }, [cartResolution]);
+
+  // A manager can publish a price while the settlement modal is already open.
+  // Cancel the pending settlement and force a fresh Place Order action so its
+  // durable checkout fingerprint can never describe an older-priced basket.
+  useEffect(() => {
+    if (!pendingOrder) return;
+    const resolvedOrder = resolveOrderLinesAgainstCatalog(pendingOrder.lines, menuItems);
+    if (resolvedOrder.removedNames.length > 0) {
+      setPendingOrder(null);
+      setShowSettlementPopup(false);
+      setShowPayNowPopup(false);
+      setCartCatalogNotice(`Removed unavailable menu item(s): ${resolvedOrder.removedNames.join(", ")}. Build and review the ticket again.`);
+      return;
+    }
+    if (resolvedOrder.changedNames.length === 0 && resolvedOrder.total === pendingOrder.total) return;
+
+    setPendingOrder(null);
+    setShowPayNowPopup(false);
+    setShowSettlementPopup(false);
+    setCartCatalogNotice(`The menu changed. Review the current total of TSh ${resolvedOrder.total.toLocaleString()}, then place the order again.`);
+  }, [menuItems, pendingOrder, showPayNowPopup]);
 
   const loadFromStoreData = () => {
     const savedStoreItems = readJson<Array<MainStoreItem & { lane?: "kitchen" | "barista" }>>(STORAGE_MAIN_STORE_ITEMS);
@@ -242,37 +463,88 @@ export default function KitchenPage() {
   const getUsedQty = (movementId: string) =>
     usageLogs.filter((entry) => entry.movementId === movementId).reduce((sum, entry) => sum + entry.quantityUsed, 0);
 
-  const addUsage = async () => {
-    const qty = Number(useQty);
-    const entry = fromStoreEntries.find((item) => item.id === useEntryId);
-    if (!entry || Number.isNaN(qty) || qty <= 0) return;
-    const remaining = entry.convertedQty - getUsedQty(entry.id);
-    if (qty > remaining) return;
-    const approved = await confirm({
+ const addUsage = async () => {
+   const qty = Number(useQty);
+   const entry = fromStoreEntries.find((item) => item.id === useEntryId);
+   if (!entry || Number.isNaN(qty) || qty <= 0) return;
+   const approved = await confirm({
       title: "Record Kitchen Usage",
       description: `Are you sure you want to record ${qty} units used for ${entry.itemName}?`,
       actionLabel: "Record Usage",
-    });
-    if (!approved) return;
-    const log: StoreUsageLog = {
-      id: `su-${Date.now()}`,
+   });
+   if (!approved) return;
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_STORE_USAGE),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The latest usage and Kitchen Inventory balances could not be refreshed. Nothing was recorded.");
+      return;
+    }
+    const existingUsage = readJson<StoreUsageLog[]>(STORAGE_STORE_USAGE) ?? [];
+    const remoteUsedQty = existingUsage
+      .filter((usage) => usage.destination === "kitchen" && usage.movementId === entry.id)
+      .reduce((sum, usage) => sum + usage.quantityUsed, 0);
+    const remaining = entry.convertedQty - remoteUsedQty;
+    if (qty > remaining) {
+      window.alert(`Only ${Math.max(0, remaining)} units remain for this store transfer.`);
+      return;
+    }
+   const log: StoreUsageLog = {
+      id: `su-${createCheckoutId("usage")}`,
       movementId: entry.id,
       destination: "kitchen",
-      quantityUsed: qty,
-      usedAt: Date.now(),
-    };
-    const next = [log, ...usageLogs];
-    setUsageLogs(next);
-    const existingUsage = readJson<StoreUsageLog[]>(STORAGE_STORE_USAGE) ?? [];
-    const existingInventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
-    const nextInventory = adjustInventoryQuantity(existingInventory, "Kitchen", entry.itemName, -qty);
-    writeJson(
-      STORAGE_STORE_USAGE,
-      [...next, ...existingUsage.filter((i) => i.destination !== "kitchen")],
+     quantityUsed: qty,
+     usedAt: Date.now(),
+   };
+   const existingInventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    const targetName = normalizeStockName(entry.itemName);
+    const target = existingInventory.find((item) =>
+      item.category === "Kitchen" && (
+        normalizeStockName(item.name) === targetName ||
+        normalizeStockName(`${item.name} ${item.size ?? ""}`) === targetName
+      ),
+   );
+    if (!target) {
+      window.alert(`No Kitchen Inventory row is linked to ${entry.itemName}.`);
+      return;
+    }
+    if (qty > target.stock) {
+      window.alert(`Not enough Kitchen Inventory stock for ${entry.itemName}.`);
+      return;
+    }
+    const effectId = `usage:${log.id}`;
+    const nextInventory = existingInventory.map((item) => item.id === target.id
+      ? {
+          ...item,
+          stock: item.stock - qty,
+          appliedStockEffectIds: Array.from(new Set([...(item.appliedStockEffectIds ?? []), effectId])),
+          stockEffects: {
+            ...(item.stockEffects ?? {}),
+            [effectId]: { kind: "units" as const, delta: -qty },
+          },
+        }
+      : item);
+    const committed = await commitBaristaStockEffectsAndLogs(
+      readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+      nextInventory,
+      [{ id: effectId, target: "inventory", itemId: target.id }],
+      [{ key: STORAGE_STORE_USAGE, record: { ...log } }],
+      [{ movementId: entry.id, destination: "kitchen", maxQuantity: entry.convertedQty }],
     );
-    writeJson(STORAGE_INVENTORY_ITEMS, nextInventory);
-    setUseQty("1");
-  };
+    if (!committed.ok) {
+      window.alert(committed.reason === "usage-capacity-exceeded"
+        ? "Another terminal used the remaining quantity first. Refresh the transfer balance and try again."
+        : "The Kitchen usage and Inventory deduction could not be confirmed together.");
+      return;
+    }
+    setUsageLogs(
+      (committed.appendedValues[STORAGE_STORE_USAGE] as StoreUsageLog[])
+        .filter((usage) => usage.destination === "kitchen"),
+    );
+   setUseQty("1");
+ };
 
   const filteredMenu = useMemo(
     () =>
@@ -284,7 +556,7 @@ export default function KitchenPage() {
     [category, menuItems, searchTerm],
   );
 
-  const subtotal = useMemo(() => cart.reduce((sum, line) => sum + line.item.price * line.qty, 0), [cart]);
+  const subtotal = useMemo(() => liveCart.reduce((sum, line) => sum + line.item.price * line.qty, 0), [liveCart]);
   const completedSalesTotal = useMemo(
     () => kitchenPayments.filter((payment) => payment.status !== "credit").reduce((sum, payment) => sum + payment.total, 0),
     [kitchenPayments],
@@ -302,6 +574,13 @@ export default function KitchenPage() {
     menuItems.forEach((item) => {
       const key = item.name.trim().toLowerCase();
       if (item.price > 0) priceMap.set(key, item.price);
+    });
+    return priceMap;
+  }, [menuItems]);
+  const kitchenMenuPriceByItemId = useMemo(() => {
+    const priceMap = new Map<string, number>();
+    menuItems.forEach((item) => {
+      if (item.price > 0) priceMap.set(item.id, item.price);
     });
     return priceMap;
   }, [menuItems]);
@@ -331,13 +610,16 @@ export default function KitchenPage() {
           ];
         }
 
+        const allocatedAmounts = allocateKitchenPaymentAmounts(
+          payment,
+          payment.lines,
+          (line) =>
+            (line.itemId ? kitchenMenuPriceByItemId.get(line.itemId) : undefined) ??
+            kitchenMenuPriceByItem.get(line.name.trim().toLowerCase()) ??
+            0,
+        );
+
         return payment.lines.map((line, index) => {
-          const price = kitchenMenuPriceByItem.get(line.name.trim().toLowerCase()) ?? 0;
-          const amount = price > 0
-            ? line.qty * price
-            : payment.lines?.length === 1
-              ? getNumber(payment.total)
-              : 0;
 
           return {
             id: `${payment.id}-${index}`,
@@ -348,11 +630,11 @@ export default function KitchenPage() {
             destination: payment.destination,
             method: payment.method,
             status: payment.status,
-            amount,
+            amount: allocatedAmounts[index] ?? 0,
           };
         });
       }),
-    [filteredDirectorSalesPayments, kitchenMenuPriceByItem],
+    [filteredDirectorSalesPayments, kitchenMenuPriceByItem, kitchenMenuPriceByItemId],
   );
   const directorSalesQuantityTotal = useMemo(
     () => directorSalesRows.reduce((sum, row) => sum + row.quantity, 0),
@@ -502,11 +784,12 @@ export default function KitchenPage() {
     });
     if (!approved) return;
     setCart([]);
+    setCartCatalogNotice("");
   };
 
-  const placeTicket = () => {
+  const placeTicket = async () => {
     if (isDirector) return;
-    if (cart.length === 0) return;
+    if (liveCart.length === 0) return;
 
     const destination =
       serviceMode === "room-service"
@@ -531,77 +814,291 @@ export default function KitchenPage() {
       return;
     }
 
-      setPendingOrder({
-        mode: serviceMode,
-        destination,
-        lines: cart.map((line) => ({ name: line.item.name, qty: line.qty })),
-        total: subtotal,
-        createdAt: bookingTimestamp,
-      });
-      setShowPayNowPopup(false);
-      setShowSettlementPopup(true);
-    };
+    // Re-read the local canonical snapshot at the action boundary. A realtime
+    // catalog event can arrive between render and this click, so the rendered
+    // subtotal alone is not authoritative enough for checkout.
+    const activeKitchenKey = getActiveKitchenStateKey();
+    await hydrateStorageKeyFromFirebase(activeKitchenKey).catch(() => undefined);
+    const latestSnapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
+      activeKitchenKey,
+      STORAGE_TICKETS,
+      STORAGE_SEQ,
+      STORAGE_PAYMENTS,
+      STORAGE_MENU,
+      300,
+    );
+    const latestMenuItems = normalizeKitchenCatalogForRevision(
+      latestSnapshot.menuItems,
+      latestSnapshot.catalogRevision,
+    );
+    const latestCart = resolveCartAgainstCatalog(liveCart, latestMenuItems);
+
+    if (latestCart.removedNames.length > 0) {
+      setCart(latestCart.lines);
+      setCartCatalogNotice(`Removed unavailable menu item(s): ${latestCart.removedNames.join(", ")}. Review the ticket before ordering.`);
+      window.alert("The menu changed and unavailable items were removed. Review the ticket, then place the order again.");
+      return;
+    }
+
+    if (latestCart.changedNames.length > 0) {
+      setCart(latestCart.lines);
+      setCartCatalogNotice(`Menu pricing was updated for: ${latestCart.changedNames.join(", ")}. Review the new total before ordering.`);
+      window.alert("The menu price changed. The ticket was updated to the current price; review the new total, then place the order again.");
+      return;
+    }
+
+    if (latestCart.lines.length === 0) return;
+    const pendingLines = buildKitchenOrderLines(latestCart.lines);
+    const pendingTotal = pendingLines.reduce((sum, line) => sum + (line.lineTotal ?? 0), 0);
+    const checkoutFingerprint = buildCheckoutFingerprint({
+      mode: serviceMode,
+      destination,
+      lines: pendingLines,
+      total: pendingTotal,
+      ...(bookingEntryMode === "past" ? { historicalCreatedAt: bookingTimestamp } : {}),
+    });
+    const checkoutId = resolveCheckoutId(
+      STORAGE_CHECKOUT_ATTEMPT,
+      checkoutFingerprint,
+      () => createCheckoutId("kitchen"),
+      pendingOrder
+        ? { checkoutId: pendingOrder.checkoutId, fingerprint: pendingOrder.checkoutFingerprint }
+        : null,
+    );
+    setCart(latestCart.lines);
+    setPendingOrder({
+      checkoutId,
+      checkoutFingerprint,
+      mode: serviceMode,
+      destination,
+      lines: pendingLines,
+      total: pendingTotal,
+      createdAt: bookingTimestamp,
+      isPastBooking: bookingEntryMode === "past",
+      catalogRevision: latestSnapshot.catalogRevision ?? 0,
+    });
+    setCartCatalogNotice("");
+    setShowPayNowPopup(false);
+    setShowSettlementPopup(true);
+  };
 
   const finalizeOrder = async (status: KitchenPaymentStatus, method: KitchenPaymentMethod) => {
-    if (isDirector) return;
-    if (!pendingOrder) return;
+    if (isDirector || !pendingOrder || checkoutInFlightRef.current) return;
+    checkoutInFlightRef.current = true;
+    setCheckoutInFlight(true);
+    const orderToFinalize = pendingOrder;
 
-    const nextSeq = ticketSeq + 1;
-    const createdAt = pendingOrder.createdAt;
-    const recordedAt = Date.now();
-    setTicketSeq(nextSeq);
+    try {
+      const activeKitchenKey = getActiveKitchenStateKey();
+      await hydrateStorageKeyFromFirebase(activeKitchenKey).catch(() => undefined);
+      const latestSnapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
+        activeKitchenKey,
+        STORAGE_TICKETS,
+        STORAGE_SEQ,
+        STORAGE_PAYMENTS,
+        STORAGE_MENU,
+        300,
+      );
+      const orderId = `kt-${orderToFinalize.checkoutId}`;
+      const paymentId = `kp-${orderToFinalize.checkoutId}`;
+      const existingPayment = latestSnapshot.payments.find((payment) => payment.id === paymentId);
+      if (existingPayment) {
+        clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+        setTickets(latestSnapshot.tickets);
+        setTicketSeq(latestSnapshot.ticketSeq);
+        setKitchenPayments(latestSnapshot.payments);
+        setMenuItems(normalizeKitchenCatalogForRevision(latestSnapshot.menuItems, latestSnapshot.catalogRevision));
+        setCart([]);
+        setPendingOrder(null);
+        setShowSettlementPopup(false);
+        setShowPayNowPopup(false);
+        window.alert(`This sale was already recorded as ${existingPayment.code}; no duplicate was created.`);
+        return;
+      }
+      const latestMenuItems = normalizeKitchenCatalogForRevision(
+        latestSnapshot.menuItems,
+        latestSnapshot.catalogRevision,
+      );
+      const resolvedOrder = resolveOrderLinesAgainstCatalog(orderToFinalize.lines, latestMenuItems);
 
-    const orderId = `kt-${createdAt}-${recordedAt}`;
-    const code = `K-${nextSeq}`;
+      if (resolvedOrder.removedNames.length > 0) {
+        const latestCart = resolveCartAgainstCatalog(cart, latestMenuItems);
+        setMenuItems(latestMenuItems);
+        setCart(latestCart.lines);
+        setPendingOrder(null);
+        setShowSettlementPopup(false);
+        setShowPayNowPopup(false);
+        setCartCatalogNotice(`Removed unavailable menu item(s): ${resolvedOrder.removedNames.join(", ")}. Build and review the ticket again.`);
+        window.alert("This order contains a menu item that is no longer available. It was removed; rebuild and review the ticket before payment.");
+        return;
+      }
 
-    const ticket: KitchenTicket = {
-      id: orderId,
-      code,
-      createdAt,
-      mode: pendingOrder.mode,
-      destination: pendingOrder.destination,
-      lines: pendingOrder.lines,
-      total: pendingOrder.total,
-    };
+      const expectedCatalogRevision = latestSnapshot.catalogRevision ?? 0;
+      const pendingPriceChanged =
+        resolvedOrder.changedNames.length > 0 ||
+        resolvedOrder.total !== orderToFinalize.total;
+      if (pendingPriceChanged) {
+        const checkoutFingerprint = buildCheckoutFingerprint({
+          mode: orderToFinalize.mode,
+          destination: orderToFinalize.destination,
+          lines: resolvedOrder.lines,
+          total: resolvedOrder.total,
+          ...(orderToFinalize.isPastBooking ? { historicalCreatedAt: orderToFinalize.createdAt } : {}),
+        });
+        setMenuItems(latestMenuItems);
+        setCart(resolveCartAgainstCatalog(cart, latestMenuItems).lines);
+        setPendingOrder({
+          ...orderToFinalize,
+          checkoutId: resolveCheckoutId(
+            STORAGE_CHECKOUT_ATTEMPT,
+            checkoutFingerprint,
+            () => createCheckoutId("kitchen"),
+          ),
+          checkoutFingerprint,
+          lines: resolvedOrder.lines,
+          total: resolvedOrder.total,
+          catalogRevision: expectedCatalogRevision,
+        });
+        setShowPayNowPopup(false);
+        setShowSettlementPopup(true);
+        setCartCatalogNotice(`The pending order now uses the current menu total: TSh ${resolvedOrder.total.toLocaleString()}.`);
+        window.alert(`The menu changed before payment. The new total is TSh ${resolvedOrder.total.toLocaleString()}. Review it and select settlement again.`);
+        return;
+      }
 
-    const paymentRecord: KitchenPaymentRecord = {
-      id: `kp-${createdAt}-${recordedAt}`,
-      ticketId: orderId,
-      code,
-      createdAt,
-      mode: pendingOrder.mode,
-      destination: pendingOrder.destination,
-      lines: pendingOrder.lines,
-      total: pendingOrder.total,
-      status,
-      method,
-    };
+      const finalizedOrder: PendingOrder = {
+        ...orderToFinalize,
+        lines: resolvedOrder.lines,
+        total: resolvedOrder.total,
+        catalogRevision: expectedCatalogRevision,
+      };
+      const createdAt = finalizedOrder.createdAt;
+      const pendingCode = "K-PENDING";
+      const ticket: KitchenTicket = {
+        id: orderId,
+        code: pendingCode,
+        createdAt,
+        mode: finalizedOrder.mode,
+        destination: finalizedOrder.destination,
+        lines: finalizedOrder.lines,
+        total: finalizedOrder.total,
+      };
+      const paymentRecord: KitchenPaymentRecord = {
+        id: paymentId,
+        ticketId: orderId,
+        code: pendingCode,
+        createdAt,
+        mode: finalizedOrder.mode,
+        destination: finalizedOrder.destination,
+        lines: finalizedOrder.lines,
+        total: finalizedOrder.total,
+        status,
+        method,
+      };
+      const nextTickets = [ticket, ...latestSnapshot.tickets];
+      const nextPayments = [paymentRecord, ...latestSnapshot.payments];
+      persistCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, {
+        checkoutId: finalizedOrder.checkoutId,
+        fingerprint: finalizedOrder.checkoutFingerprint,
+      });
+      const commitResult = await commitPosStateWithCatalogRevision(
+        activeKitchenKey,
+        expectedCatalogRevision,
+        {
+          tickets: nextTickets,
+          ticketSeq: latestSnapshot.ticketSeq,
+          payments: nextPayments,
+          // Checkout is an operational write. Preserve the exact canonical
+          // catalog whose revision was validated instead of persisting a
+          // display-normalized or initially seeded view at the same revision.
+          menuItems: latestSnapshot.menuItems,
+          catalogRevision: expectedCatalogRevision,
+          queueResetAt: latestSnapshot.queueResetAt ?? 0,
+          deletedPaymentKeys: latestSnapshot.deletedPaymentKeys ?? [],
+          deletedTicketIds: latestSnapshot.deletedTicketIds ?? [],
+        },
+        { prefix: "K", ticketId: orderId, paymentId },
+      );
 
-    const nextTickets = [ticket, ...tickets];
-    const nextPayments = [paymentRecord, ...kitchenPayments];
-    setTickets(nextTickets);
-    setKitchenPayments(nextPayments);
-    writePosState(getActiveKitchenStateKey(), nextTickets, nextSeq, nextPayments, menuItems);
+      if (!commitResult.ok) {
+        if (commitResult.reason === "checkout-deleted") {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, finalizedOrder.checkoutId);
+          setPendingOrder(null);
+          setCart([]);
+          setShowSettlementPopup(false);
+          setShowPayNowPopup(false);
+          window.alert("This checkout was deleted after it was first recorded. It was not recreated and no duplicate sale was made.");
+        } else if (commitResult.reason === "catalog-changed") {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, finalizedOrder.checkoutId);
+          const refreshedSnapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
+            activeKitchenKey,
+            STORAGE_TICKETS,
+            STORAGE_SEQ,
+            STORAGE_PAYMENTS,
+            STORAGE_MENU,
+            300,
+          );
+          const refreshedMenu = normalizeKitchenCatalogForRevision(
+            refreshedSnapshot.menuItems,
+            refreshedSnapshot.catalogRevision,
+          );
+          const refreshedOrder = resolveOrderLinesAgainstCatalog(orderToFinalize.lines, refreshedMenu);
+          setMenuItems(refreshedMenu);
+          setCart(resolveCartAgainstCatalog(cart, refreshedMenu).lines);
+          // The old attempt is cleared above. Force a new Place Order action so
+          // the new price and its durable fingerprint/ID are created together.
+          setPendingOrder(null);
+          setShowPayNowPopup(false);
+          setShowSettlementPopup(false);
+          setCartCatalogNotice("The manager changed the menu during payment. Review the refreshed order and place it again.");
+          window.alert("The menu changed during payment, so the old-priced sale was not recorded. Review the refreshed order and try again.");
+        } else {
+          window.alert("The sale could not be safely synchronized. Nothing was recorded; please check the connection and try again.");
+        }
+        return;
+      }
 
-    setCart([]);
-    setPendingOrder(null);
-    setShowSettlementPopup(false);
-    setShowPayNowPopup(false);
+      const committedState = commitResult.value;
+      clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, finalizedOrder.checkoutId);
+      const committedCode =
+        committedState.payments.find((payment) => payment.id === paymentId)?.code ??
+        committedState.tickets.find((entry) => entry.id === orderId)?.code;
+      setTickets(committedState.tickets);
+      setTicketSeq(committedState.ticketSeq);
+      setKitchenPayments(committedState.payments);
+      setMenuItems(normalizeKitchenCatalogForRevision(
+        committedState.menuItems,
+        committedState.catalogRevision,
+      ));
+      setCart([]);
+      setCartCatalogNotice("");
+      setPendingOrder(null);
+      setShowSettlementPopup(false);
+      setShowPayNowPopup(false);
 
-    const printResult = await printDepartmentReceipt({
-      department: "kitchen",
-      code,
-      destination: pendingOrder.destination,
-      mode: pendingOrder.mode,
-      method,
-      status,
-      total: pendingOrder.total,
-      createdAt,
-      lines: pendingOrder.lines,
-    });
+      if (!committedCode || committedCode.endsWith("-PENDING")) {
+        window.alert("The sale was recorded, but its receipt number could not be confirmed. Check the Kitchen sales list before retrying.");
+        return;
+      }
 
-    if (!printResult.ok && printResult.reason) {
-      window.alert(`Kitchen receipt was not printed: ${printResult.reason}`);
+      const printResult = await printDepartmentReceipt({
+        department: "kitchen",
+        code: committedCode,
+        destination: finalizedOrder.destination,
+        mode: finalizedOrder.mode,
+        method,
+        status,
+        total: finalizedOrder.total,
+        createdAt,
+        lines: finalizedOrder.lines,
+      });
+
+      if (!printResult.ok && printResult.reason) {
+        window.alert(`Kitchen receipt was not printed: ${printResult.reason}`);
+      }
+    } finally {
+      checkoutInFlightRef.current = false;
+      setCheckoutInFlight(false);
     }
   };
 
@@ -613,9 +1110,31 @@ export default function KitchenPage() {
       actionLabel: "Deliver",
     });
     if (!approved) return;
-    const nextTickets = tickets.filter((ticket) => ticket.id !== id);
-    setTickets(nextTickets);
-    writePosState(getActiveKitchenStateKey(), nextTickets, ticketSeq, kitchenPayments, menuItems);
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const hydration = await hydrateStorageKeyFromFirebase(activeKitchenKey);
+    if (!hydration.ok) {
+      window.alert("The shared Kitchen queue could not be refreshed. Nothing was marked delivered.");
+      return;
+    }
+    const snapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
+      activeKitchenKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 300,
+    );
+    if (!snapshot.tickets.some((ticket) => ticket.id === id)) {
+      window.alert("This Kitchen order was already delivered or cancelled on another terminal.");
+      return;
+    }
+    const deletedTicketIds = Array.from(new Set([...(snapshot.deletedTicketIds ?? []), id]));
+    const nextTickets = snapshot.tickets.filter((ticket) => ticket.id !== id);
+    try {
+      const committed = await commitSyncedStorageValueAndWait(activeKitchenKey, {
+        ...snapshot,
+        tickets: nextTickets,
+        deletedTicketIds,
+      });
+      setTickets(committed.tickets);
+    } catch {
+      window.alert("The shared Kitchen queue did not confirm delivery. Reconnect and try again.");
+    }
   };
 
   const cancelTicket = async (id: string) => {
@@ -629,18 +1148,39 @@ export default function KitchenPage() {
     });
     if (!approved) return;
 
-    const cancelled: CancelledKitchenTicket = {
-      ...ticket,
-      source: "kitchen",
-      cancelledAt: Date.now(),
-    };
-
-    const existing = readJson<CancelledKitchenTicket[]>(STORAGE_CANCELLED) ?? [];
-    writeJson(STORAGE_CANCELLED, [cancelled, ...existing]);
-
-    const nextTickets = tickets.filter((t) => t.id !== id);
-    setTickets(nextTickets);
-    writePosState(getActiveKitchenStateKey(), nextTickets, ticketSeq, kitchenPayments, menuItems);
+    const activeKitchenKey = getActiveKitchenStateKey();
+    const hydration = await hydrateStorageKeyFromFirebase(activeKitchenKey);
+    if (!hydration.ok) {
+      window.alert("The shared Kitchen queue could not be refreshed. Nothing was cancelled.");
+      return;
+    }
+    const snapshot = readPosState<KitchenTicket, KitchenPaymentRecord, KitchenMenuItem>(
+      activeKitchenKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 300,
+    );
+    const currentTicket = snapshot.tickets.find((entry) => entry.id === id);
+    if (!currentTicket) {
+      window.alert("This Kitchen order was already delivered or cancelled on another terminal.");
+      return;
+    }
+    const deletedTicketIds = Array.from(new Set([...(snapshot.deletedTicketIds ?? []), id]));
+    const nextTickets = snapshot.tickets.filter((entry) => entry.id !== id);
+    try {
+      const committed = await commitSyncedStorageValueAndWait(activeKitchenKey, {
+        ...snapshot,
+        tickets: nextTickets,
+        deletedTicketIds,
+      });
+      setTickets(committed.tickets);
+      const cancelled: CancelledKitchenTicket = {
+        ...currentTicket,
+        source: "kitchen",
+        cancelledAt: Date.now(),
+      };
+      const existing = readJson<CancelledKitchenTicket[]>(STORAGE_CANCELLED) ?? [];
+      writeJson(STORAGE_CANCELLED, [cancelled, ...existing]);
+    } catch {
+      window.alert("The shared Kitchen queue did not confirm cancellation. Nothing was cancelled.");
+    }
   };
 
   if (isManager) {
@@ -1134,7 +1674,7 @@ export default function KitchenPage() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-xl font-black uppercase tracking-tight">Current Ticket</CardTitle>
               <Badge variant="outline" className="font-black uppercase text-[10px] tracking-widest">
-                {cart.reduce((count, line) => count + line.qty, 0)} items
+                {liveCart.reduce((count, line) => count + line.qty, 0)} items
               </Badge>
             </div>
             <CardDescription>Prepare and place a kitchen order</CardDescription>
@@ -1177,14 +1717,20 @@ export default function KitchenPage() {
               </div>
             )}
 
-            {cart.length === 0 ? (
+            {cartCatalogNotice && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">
+                {cartCatalogNotice}
+              </div>
+            )}
+
+            {liveCart.length === 0 ? (
               <div className="h-44 rounded-xl border border-dashed flex flex-col items-center justify-center text-center opacity-40">
                 <Receipt className="w-10 h-10 mb-2" />
                 <p className="font-black uppercase tracking-widest text-[10px]">Ticket is empty</p>
               </div>
             ) : (
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
-                {cart.map((line) => (
+                {liveCart.map((line) => (
                   <div key={line.item.id} className="border rounded-xl p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -1226,10 +1772,10 @@ export default function KitchenPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" onClick={clearCart} disabled={cart.length === 0 || isDirector} className="h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button variant="outline" onClick={clearCart} disabled={liveCart.length === 0 || isDirector} className="h-11 font-black uppercase text-[10px] tracking-widest">
                 Clear Ticket
               </Button>
-              <Button onClick={placeTicket} disabled={cart.length === 0 || isDirector} className="h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button onClick={placeTicket} disabled={liveCart.length === 0 || isDirector} className="h-11 font-black uppercase text-[10px] tracking-widest">
                 Place Order
               </Button>
             </div>
@@ -1242,10 +1788,18 @@ export default function KitchenPage() {
           <Card className="w-full max-w-md">
             <CardHeader>
               <CardTitle className="text-xl font-black uppercase tracking-tight">Select Settlement</CardTitle>
-              <CardDescription>Choose Pay Now or Credit</CardDescription>
+              <CardDescription>
+                Current total: TSh {(pendingOrder?.total ?? 0).toLocaleString()}. Choose Pay Now or Credit.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
+              {cartCatalogNotice && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">
+                  {cartCatalogNotice}
+                </div>
+              )}
               <Button
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowSettlementPopup(false);
                   setShowPayNowPopup(true);
@@ -1255,6 +1809,7 @@ export default function KitchenPage() {
                 Paid Now
               </Button>
               <Button
+                disabled={checkoutInFlight}
                 onClick={() => finalizeOrder("credit", "credit")}
                 className="w-full h-11 font-black uppercase text-[10px] tracking-widest bg-red-600 hover:bg-red-600/90 text-white"
               >
@@ -1262,6 +1817,7 @@ export default function KitchenPage() {
               </Button>
               <Button
                 variant="outline"
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowSettlementPopup(false);
                   setShowPayNowPopup(false);
@@ -1283,17 +1839,18 @@ export default function KitchenPage() {
               <CardDescription>Select cash, card, or mobile</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button onClick={() => finalizeOrder("completed", "cash")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "cash")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Cash
               </Button>
-              <Button onClick={() => finalizeOrder("completed", "card")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "card")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Card
               </Button>
-              <Button onClick={() => finalizeOrder("completed", "mobile")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "mobile")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Mobile
               </Button>
               <Button
                 variant="outline"
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowPayNowPopup(false);
                   setShowSettlementPopup(true);

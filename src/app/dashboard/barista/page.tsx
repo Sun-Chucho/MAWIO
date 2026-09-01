@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { readStoredRole } from "@/app/lib/auth";
 import { InventoryItem, ROOMS, Role } from "@/app/lib/mock-data";
 import {
@@ -16,9 +16,10 @@ import {
   StoreMovementLog,
   StoreUsageLog,
 } from "@/app/lib/inventory-transfer";
-import { findStoreItemForMenuName, formatTotStatus, getMenuStockStatus, getRemainingTots, getTotLimit, isTotTrackedMenuItem, normalizeBaristaMenuItems } from "@/app/lib/barista-stock";
+import { buildInitialBaristaMenuItems, findStoreItemForMenuName, formatTotStatus, getBaristaMenuLabel, getMenuStockStatus, getRemainingTots, getTotLimit, isTotTrackedMenuItem, normalizeBaristaMenuItems } from "@/app/lib/barista-stock";
 import { printDepartmentReceipt } from "@/app/lib/receipt-print";
-import { getActiveBaristaStateKey, readJson, readPosState, writeJson, writePosState } from "@/app/lib/storage";
+import { buildCheckoutFingerprint, clearCheckoutAttempt, getPendingCheckoutAttempts, persistCheckoutAttempt, resolveCheckoutId, withBaristaStockEffectLock } from "@/app/lib/pos-checkout-attempt";
+import { getActiveBaristaStateKey, readJson, readPosState, writeJson } from "@/app/lib/storage";
 import { BARISTA_INVENTORY_SEED } from "@/app/lib/seed-barista-data";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,7 +33,7 @@ import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-ma
 import { CheckCircle2, Coffee, Lock, Minus, Pencil, Plus, Receipt, Search, Trash2, User, XCircle } from "lucide-react";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { toast } from "@/hooks/use-toast";
-import { getPosPaymentSyncKey, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitBaristaCatalogAndStockMutation, commitBaristaCheckoutWithStock, commitBaristaStockEffectsAndLogs, commitBaristaVoidWithStock, commitPosCatalogMutation, commitPosStateWithCatalogRevision, commitSyncedStorageValueAndWait, getPosPaymentSyncKey, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { DEFAULT_LOGIN_PASSWORD, getProfilePassword, readActiveSessionUsername, readLocalLoginProfiles, saveLoginProfileToServer, STORAGE_LOGIN_PROFILES, subscribeToSessionIdentity, upsertProfileUser } from "@/app/lib/login-profiles";
 
 type BaristaCategory = "all" | "espresso" | "coffee" | "tea" | "cold" | "snacks";
@@ -40,7 +41,15 @@ type ServiceMode = "restaurant" | "room-service" | "take-away";
 type BookingEntryMode = "current" | "past";
 type BaristaPaymentMethod = "cash" | "card" | "mobile" | "credit";
 type BaristaPaymentStatus = "completed" | "credit";
-type BaristaOrderLine = { name: string; qty: number };
+type BaristaOrderLine = {
+  name: string;
+  qty: number;
+  itemId?: string;
+  inventoryItemId?: string;
+  storeItemId?: string;
+  unitPrice?: number;
+  lineTotal?: number;
+};
 type SalesDateFilter = "day" | "week" | "month" | "all";
 
 interface BaristaMenuItem {
@@ -52,6 +61,8 @@ interface BaristaMenuItem {
   barcode?: string;
   // Supplier cost, used only for manager costing — never shown in POS.
   buyingPrice?: number;
+  inventoryItemId?: string;
+  storeItemId?: string;
 }
 
 interface BaristaWasteLog {
@@ -89,6 +100,7 @@ interface BaristaPaymentRecord {
   status: BaristaPaymentStatus;
   method: BaristaPaymentMethod;
   lines?: BaristaOrderLine[];
+  stockRequired?: boolean;
 }
 
 interface CancelledBaristaTicket extends BaristaTicket {
@@ -97,6 +109,8 @@ interface CancelledBaristaTicket extends BaristaTicket {
 }
 
 interface PendingOrder {
+  checkoutId: string;
+  checkoutFingerprint: string;
   mode: ServiceMode;
   destination: string;
   lines: BaristaOrderLine[];
@@ -104,6 +118,7 @@ interface PendingOrder {
   createdAt: number;
   isPastBooking: boolean;
   paymentMethod?: BaristaPaymentMethod;
+  catalogRevision?: number;
 }
 
 const BARISTA_MENU: BaristaMenuItem[] = [];
@@ -114,6 +129,7 @@ const STORAGE_MENU = "orange-hotel-barista-menu";
 const STORAGE_PAYMENTS = "orange-hotel-barista-payments";
 const STORAGE_CANCELLED = "orange-hotel-cancelled-tickets";
 const STORAGE_WASTE = "orange-hotel-barista-waste";
+const STORAGE_CHECKOUT_ATTEMPT = "orange-hotel-barista-checkout-attempt";
 
 function getLocalDateValue(date = new Date()) {
   const offset = date.getTimezoneOffset() * 60_000;
@@ -124,6 +140,285 @@ function getBookingTimestamp(mode: BookingEntryMode, dateValue: string, timeValu
   if (mode === "current") return Date.now();
   const timestamp = new Date(`${dateValue}T${timeValue || "12:00"}:00`).getTime();
   return Number.isFinite(timestamp) ? timestamp : NaN;
+}
+
+function createCheckoutId(prefix: string) {
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${randomPart}`;
+}
+
+function hasStockEffect(
+  item: Pick<MainStoreItem, "appliedStockEffectIds"> | Pick<InventoryItem, "appliedStockEffectIds">,
+  effectId: string,
+) {
+  return item.appliedStockEffectIds?.includes(effectId) ?? false;
+}
+
+function appendStockEffectId(existing: string[] | undefined, effectId: string) {
+  return Array.from(new Set([...(existing ?? []), effectId]));
+}
+
+function trackStoreStockEffect<T extends MainStoreItem>(
+  item: T,
+  effectId: string | undefined,
+  inventoryDelta: number,
+  stockEffect?: { kind: "units" | "tots"; delta: number; totLimit?: number; requiresEffectId?: string; inverseOfEffectId?: string },
+): T {
+  if (!effectId) return item;
+  const appliedStockEffectIds = appendStockEffectId(item.appliedStockEffectIds, effectId);
+  const stockInventoryDeltas = Object.fromEntries(
+    Object.entries({ ...(item.stockInventoryDeltas ?? {}), [effectId]: inventoryDelta })
+  );
+  const stockEffects = stockEffect
+    ? { ...(item.stockEffects ?? {}), [effectId]: stockEffect }
+    : item.stockEffects;
+  return { ...item, appliedStockEffectIds, stockInventoryDeltas, stockEffects } as T;
+}
+
+function queueStoreStockEffect<T extends MainStoreItem>(
+  item: T,
+  effectId: string | undefined,
+  inventoryDelta: number,
+  stockEffect: NonNullable<MainStoreItem["pendingStockEffects"]>[string],
+): T {
+  if (!effectId) return item;
+  return {
+    ...item,
+    stockInventoryDeltas: {
+      ...(item.stockInventoryDeltas ?? {}),
+      [effectId]: inventoryDelta,
+    },
+    pendingStockEffects: {
+      ...(item.pendingStockEffects ?? {}),
+      [effectId]: stockEffect,
+    },
+  } as T;
+}
+
+function findInventoryStockEffectTarget(
+  items: InventoryItem[],
+  category: string,
+  itemName: string,
+  preferredItemId?: string,
+) {
+  const target = normalizeStockName(itemName);
+  return items.find((item) => {
+    if (preferredItemId && item.id === preferredItemId) return true;
+    return item.category === category && (
+      normalizeStockName(item.name) === target ||
+      normalizeStockName(`${item.name} ${item.size ?? ""}`) === target
+    );
+  });
+}
+
+function applyTrackedInventoryEffect(
+  items: InventoryItem[],
+  category: string,
+  itemName: string,
+  delta: number,
+  effectId: string | undefined,
+  preferredItemId?: string,
+  forceUnitDelta = false,
+  stockEffectOverride?: NonNullable<InventoryItem["stockEffects"]>[string],
+): InventoryItem[] {
+  if (!effectId) return adjustInventoryQuantity(items, category, itemName, delta);
+  const matchedItem = findInventoryStockEffectTarget(items, category, itemName, preferredItemId);
+  if (!matchedItem || hasStockEffect(matchedItem, effectId)) return items;
+  return items.map((item) => {
+    if (item.id !== matchedItem.id) return item;
+    let adjustedItem = item;
+    const overrideTotLimit = Number(stockEffectOverride?.totLimit);
+    const totPerBottle = Number.isFinite(overrideTotLimit) && overrideTotLimit > 0
+      ? overrideTotLimit
+      : typeof item.totPerBottle === "number"
+        ? item.totPerBottle
+        : 0;
+    const isTotAdjustment =
+      !forceUnitDelta &&
+      totPerBottle > 0 &&
+      (stockEffectOverride?.kind === "tots" || normalizeStockName(itemName).endsWith("tots") || Boolean(preferredItemId));
+    if (delta !== 0 && isTotAdjustment) {
+      const currentTotSold = typeof item.totSold === "number" ? item.totSold : 0;
+      if (delta < 0) {
+        const nextTotSold = currentTotSold + Math.abs(delta);
+        adjustedItem = {
+          ...item,
+          stock: Math.max(0, item.stock - Math.floor(nextTotSold / totPerBottle)),
+          totSold: nextTotSold % totPerBottle,
+        };
+      } else {
+        const nextTotSold = currentTotSold - delta;
+        if (nextTotSold >= 0) {
+          adjustedItem = { ...item, totSold: nextTotSold };
+        } else {
+          const bottlesRestored = Math.ceil(Math.abs(nextTotSold) / totPerBottle);
+          adjustedItem = {
+            ...item,
+            stock: item.stock + bottlesRestored,
+            totSold: nextTotSold + bottlesRestored * totPerBottle,
+          };
+        }
+      }
+    } else if (delta !== 0) {
+      adjustedItem = { ...item, stock: Math.max(0, item.stock + delta) };
+    }
+    const stockEffect: NonNullable<InventoryItem["stockEffects"]>[string] = stockEffectOverride ?? {
+      kind: isTotAdjustment ? "tots" : "units",
+      delta,
+      ...(isTotAdjustment ? { totLimit: totPerBottle } : {}),
+    };
+    return {
+      ...adjustedItem,
+      appliedStockEffectIds: appendStockEffectId(adjustedItem.appliedStockEffectIds, effectId),
+      stockEffects: {
+        ...(adjustedItem.stockEffects ?? {}),
+        [effectId]: stockEffect,
+      },
+    };
+  });
+}
+
+function queueTrackedInventoryEffect(
+  items: InventoryItem[],
+  category: string,
+  itemName: string,
+  effectId: string | undefined,
+  effect: NonNullable<InventoryItem["pendingStockEffects"]>[string],
+  preferredItemId?: string,
+) {
+  if (!effectId) return items;
+  const matchedItem = findInventoryStockEffectTarget(items, category, itemName, preferredItemId);
+  if (!matchedItem || hasStockEffect(matchedItem, effectId) || matchedItem.pendingStockEffects?.[effectId]) {
+    return items;
+  }
+  return items.map((item) => item.id === matchedItem.id
+    ? {
+        ...item,
+        pendingStockEffects: {
+          ...(item.pendingStockEffects ?? {}),
+          [effectId]: effect,
+        },
+      }
+    : item);
+}
+
+function reconcileBaristaCartWithCatalog(sourceCart: CartLine[], catalog: BaristaMenuItem[]) {
+  const currentById = new Map(catalog.map((item) => [item.id, item]));
+  let removedCount = 0;
+  let changed = false;
+  const removedNames: string[] = [];
+  const changedNames: string[] = [];
+  const nextCart = sourceCart.flatMap((line) => {
+    const currentItem = currentById.get(line.item.id);
+    if (!currentItem) {
+      removedCount += 1;
+      removedNames.push(line.item.name);
+      changed = true;
+      return [];
+    }
+    if (
+      currentItem.name === line.item.name &&
+      currentItem.price === line.item.price &&
+      currentItem.category === line.item.category &&
+      currentItem.prepMinutes === line.item.prepMinutes &&
+      currentItem.inventoryItemId === line.item.inventoryItemId &&
+      currentItem.storeItemId === line.item.storeItemId
+      ) return [line];
+      changed = true;
+      changedNames.push(currentItem.name);
+      return [{ ...line, item: currentItem }];
+  });
+  return { nextCart, removedCount, removedNames, changedNames, changed };
+}
+
+function createBaristaOrderLines(sourceCart: CartLine[]): BaristaOrderLine[] {
+  return sourceCart.map((line) => ({
+    itemId: line.item.id,
+    inventoryItemId: line.item.inventoryItemId,
+    storeItemId: line.item.storeItemId,
+    name: line.item.name,
+    qty: line.qty,
+    unitPrice: line.item.price,
+    lineTotal: line.item.price * line.qty,
+  }));
+}
+
+function reconcileBaristaOrderLinesWithCatalog(
+  sourceLines: BaristaOrderLine[],
+  catalog: BaristaMenuItem[],
+) {
+  const currentById = new Map(catalog.map((item) => [item.id, item]));
+  let removedCount = 0;
+  let changed = false;
+  const nextCart: CartLine[] = [];
+  const nextLines = sourceLines.flatMap((line) => {
+    const currentItem = line.itemId
+      ? currentById.get(line.itemId)
+      : catalog.find((item) => item.name.trim().toLowerCase() === line.name.trim().toLowerCase());
+    if (!currentItem) {
+      removedCount += 1;
+      changed = true;
+      return [];
+    }
+
+    const nextLine: BaristaOrderLine = {
+      itemId: currentItem.id,
+      inventoryItemId: currentItem.inventoryItemId,
+      storeItemId: currentItem.storeItemId,
+      name: currentItem.name,
+      qty: line.qty,
+      unitPrice: currentItem.price,
+      lineTotal: currentItem.price * line.qty,
+    };
+    nextCart.push({ item: currentItem, qty: line.qty });
+
+    if (
+      line.itemId !== nextLine.itemId ||
+      line.inventoryItemId !== nextLine.inventoryItemId ||
+      line.storeItemId !== nextLine.storeItemId ||
+      line.name !== nextLine.name ||
+      line.unitPrice !== nextLine.unitPrice ||
+      line.lineTotal !== nextLine.lineTotal
+    ) changed = true;
+    return [nextLine];
+  });
+
+  return { nextLines, nextCart, removedCount, changed };
+}
+
+function getBaristaLegacySalesKey(name: string) {
+  return `name:${normalizeBaristaTarget(name)}:${isTotTrackedMenuItem(name) ? "tots" : "standard"}`;
+}
+
+function getBaristaOrderLineSalesKey(line: BaristaOrderLine) {
+  return line.itemId ? `item:${line.itemId}` : getBaristaLegacySalesKey(line.name);
+}
+
+function allocateBaristaPaymentAmounts(
+  payment: BaristaPaymentRecord,
+  lines: BaristaOrderLine[],
+  getLegacyUnitPrice: (line: BaristaOrderLine) => number,
+) {
+  const weights = lines.map((line) => {
+    const storedLineTotal = Number(line.lineTotal);
+    const storedUnitPrice = Number(line.unitPrice);
+    if (Number.isFinite(storedLineTotal) && storedLineTotal >= 0) return storedLineTotal;
+    if (Number.isFinite(storedUnitPrice) && storedUnitPrice >= 0) return storedUnitPrice * line.qty;
+    return getLegacyUnitPrice(line) * line.qty;
+  });
+  const weightTotal = weights.reduce((sum, amount) => sum + amount, 0);
+  const quantityTotal = lines.reduce((sum, line) => sum + line.qty, 0);
+  let allocated = 0;
+
+  return lines.map((line, index) => {
+    if (index === lines.length - 1) return payment.total - allocated;
+    const divisor = weightTotal > 0 ? weightTotal : quantityTotal;
+    const weight = weightTotal > 0 ? weights[index] : line.qty;
+    const amount = Math.round(payment.total * (divisor > 0 ? (weight ?? 0) / divisor : 0) * 100) / 100;
+    allocated += amount;
+    return amount;
+  });
 }
 
 function matchesSalesDateFilter(createdAt: number | undefined, filter: SalesDateFilter) {
@@ -157,73 +452,48 @@ function formatPaymentDate(createdAt: number | undefined) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
 }
 
-const normalizeCategory = (value: string, itemName = ""): Exclude<BaristaCategory, "all"> => {
-  const normalizedValue = value.trim().toLowerCase();
-  const normalizedName = itemName.trim().toLowerCase();
-
-  if (normalizedValue === "espresso" || normalizedValue === "coffee" || normalizedValue === "tea" || normalizedValue === "cold" || normalizedValue === "snacks") {
-    return normalizedValue;
-  }
-
-  if (normalizedValue === "soft drink" || normalizedValue === "soda" || normalizedValue === "energy drink" || normalizedValue === "water" || normalizedValue === "beer" || normalizedValue === "wine" || normalizedValue === "cider" || normalizedValue === "spirit" || normalizedValue === "sparkling" || normalizedValue === "whisky" || normalizedValue === "gin" || normalizedValue === "liqueur" || normalizedValue === "cognac" || normalizedValue === "aperitif" || normalizedValue === "malt" || normalizedValue === "bar") {
-    return "cold";
-  }
-
-  if (normalizedName.includes("espresso") || normalizedName.includes("macchiato")) return "espresso";
-  if (normalizedName.includes("tea")) return "tea";
-  if (normalizedName.includes("ice cream") || normalizedName.includes("snack")) return "snacks";
-  if (normalizedName.includes("iced") || normalizedName.includes("soda") || normalizedName.includes("water") || normalizedName.includes("juice") || normalizedName.includes("beer") || normalizedName.includes("wine")) return "cold";
-  return "coffee";
-};
-
-function normalizeBaristaMenuItemsFromInventory(inventory: InventoryItem[]): BaristaMenuItem[] {
-  const deduped = new Map<string, BaristaMenuItem>();
-
-  inventory
-    .filter((item) => {
-      const status = item.status?.toUpperCase() ?? "ACTIVE";
-      const category = item.category?.trim().toLowerCase() ?? "";
-      return status === "ACTIVE" && category !== "kitchen";
-    })
-    .forEach((item) => {
-      const name = getBaristaInventoryLabel(item);
-      const key = `${normalizeBaristaTarget(name)}|${(item.category ?? "").toLowerCase()}|${isTotInventoryItem(item) ? "tot" : "full"}`;
-      const nextMenuItem: BaristaMenuItem = {
-        id: item.id,
-        name,
-        price:
-          typeof item.sellingPrice === "number" && item.sellingPrice > 0
-            ? item.sellingPrice
-            : typeof item.price === "number" && item.price > 0
-              ? item.price
-              : 0,
-        category: normalizeCategory(item.category, name),
-        prepMinutes: 2,
-        barcode: item.barcode || "",
-      };
-      const existingItem = deduped.get(key);
-      if (!existingItem || nextMenuItem.price > existingItem.price || (!!nextMenuItem.barcode && !existingItem.barcode)) {
-        deduped.set(key, nextMenuItem);
-      }
-    });
-
-  return Array.from(deduped.values());
-}
-
 function syncBaristaMenuItemsWithSharedInventory(
   menuItems: BaristaMenuItem[],
   inventory: InventoryItem[],
   _storeItems: MainStoreItem[],
+  allowInitialSeed = true,
 ) {
   // The POS menu is authoritative: the seeded drink list plus any
   // manual edits made in the manager Drinks / Inventory tabs. We deliberately do
   // NOT merge items in from the shared inventory/store here. That shared data was
   // historically included stale data, so merging it back could restore removed drinks.
   // Stock levels are resolved separately at render time via getMenuStockStatus.
-  if (menuItems.length === 0) {
-    return normalizeBaristaMenuItemsFromInventory(inventory);
+  if (menuItems.length === 0 && allowInitialSeed) {
+    return buildInitialBaristaMenuItems(inventory) as BaristaMenuItem[];
   }
   return menuItems;
+}
+
+function buildBaristaDisplayCatalog(
+  menuItems: BaristaMenuItem[],
+  catalogRevision: number | undefined,
+  inventory: InventoryItem[],
+  storeItems: MainStoreItem[],
+) {
+  return normalizeBaristaMenuItems(
+    syncBaristaMenuItemsWithSharedInventory(
+      menuItems,
+      inventory,
+      storeItems,
+      (catalogRevision ?? 0) === 0,
+    ),
+    storeItems,
+  ).map((item) => {
+    if (item.storeItemId) return item;
+    const linkedInventoryItem = inventory.find((entry) =>
+      entry.id === item.inventoryItemId || entry.id === item.id);
+    if (!linkedInventoryItem) return item;
+    const linkedStoreItem = findStoreItemForMenuName(
+      storeItems,
+      getBaristaInventoryLabel(linkedInventoryItem),
+    );
+    return linkedStoreItem ? { ...item, storeItemId: linkedStoreItem.id } : item;
+  });
 }
 
 function normalizeBaristaTarget(name: string) {
@@ -239,10 +509,6 @@ function getBaristaInventoryLabel(item: Pick<InventoryItem, "name" | "size">) {
   if (!size) return isTotItem ? `${baseName} (TOTS)` : baseName;
   if (rawName.toLowerCase().includes(size.toLowerCase())) return rawName;
   return isTotItem ? `${baseName} ${size} (TOTS)`.trim() : `${baseName} ${size}`.trim();
-}
-
-function isTotInventoryItem(item: Pick<InventoryItem, "name" | "totPerBottle">) {
-  return (typeof item.totPerBottle === "number" && item.totPerBottle > 0) || /\s*\(?TOTS?\)?$/i.test(item.name);
 }
 
 export default function BaristaPage() {
@@ -269,8 +535,9 @@ export default function BaristaPage() {
   const [roomNumber, setRoomNumber] = useState("");
 
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [cartCatalogNotice, setCartCatalogNotice] = useState("");
   const [tickets, setTickets] = useState<BaristaTicket[]>([]);
-  const [ticketSeq, setTicketSeq] = useState(1);
+  const [, setTicketSeq] = useState(1);
   const [storedMenuItems, setStoredMenuItems] = useState<BaristaMenuItem[]>(BARISTA_MENU);
   const [baristaPayments, setBaristaPayments] = useState<BaristaPaymentRecord[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
@@ -285,6 +552,10 @@ export default function BaristaPage() {
   const [pendingOrder, setPendingOrder] = useState<PendingOrder | null>(null);
   const [showSettlementPopup, setShowSettlementPopup] = useState(false);
   const [showPayNowPopup, setShowPayNowPopup] = useState(false);
+  const checkoutInFlightRef = useRef(false);
+  const stockRecoveryInFlightRef = useRef(false);
+  const authoritativeHydrationRef = useRef(false);
+  const [checkoutInFlight, setCheckoutInFlight] = useState(false);
   const [accountTab, setAccountTab] = useState<"session" | "password">("session");
   const [activeUsername, setActiveUsername] = useState("");
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
@@ -351,32 +622,44 @@ export default function BaristaPage() {
       const inventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
       setInventoryItems(inventory);
 
-      const menuItems = syncBaristaMenuItemsWithSharedInventory(
+      const menuItems = buildBaristaDisplayCatalog(
         snapshot.menuItems,
+        snapshot.catalogRevision,
         inventory,
         readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
       );
-      if (snapshot.menuItems.length === 0 && menuItems.length > 0) {
-        writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, menuItems);
-      }
       setStoredMenuItems(menuItems);
-      setPosHydrated(true);
+      if (authoritativeHydrationRef.current) setPosHydrated(true);
     };
 
     const bootstrapBarista = async () => {
-      await Promise.all([
-        hydrateStorageKeyFromFirebase(activeBaristaKey).catch(() => undefined),
-        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS).catch(() => undefined),
-        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS).catch(() => undefined),
+      return Promise.all([
+        hydrateStorageKeyFromFirebase(activeBaristaKey),
+        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
       ]);
     };
 
-    void bootstrapBarista().finally(applyBaristaSnapshot);
+    let retryTimer: number | null = null;
+    const hydrateBarista = async () => {
+      const results = await bootstrapBarista();
+      if (cancelled) return;
+      if (results.every((result) => result.ok)) {
+        authoritativeHydrationRef.current = true;
+        applyBaristaSnapshot();
+        return;
+      }
+      retryTimer = window.setTimeout(hydrateBarista, 5000);
+    };
+
+    void hydrateBarista();
     const unsubscribeBarista = subscribeToSyncedStorageKey(activeBaristaKey, applyBaristaSnapshot);
     const unsubscribeInventory = subscribeToSyncedStorageKey(STORAGE_INVENTORY_ITEMS, applyBaristaSnapshot);
 
     return () => {
       cancelled = true;
+      authoritativeHydrationRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       unsubscribeBarista();
       unsubscribeInventory();
     };
@@ -418,15 +701,14 @@ export default function BaristaPage() {
       STORAGE_MENU,
       490,
     );
-    const syncedMenuItems = syncBaristaMenuItemsWithSharedInventory(snapshot.menuItems, inventoryItems, baristaStoreItems);
-
-    if (JSON.stringify(syncedMenuItems) !== JSON.stringify(snapshot.menuItems)) {
-      writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, syncedMenuItems);
-    }
-
-    if (JSON.stringify(syncedMenuItems) !== JSON.stringify(storedMenuItems)) {
-      setStoredMenuItems(syncedMenuItems);
-    }
+    const syncedMenuItems = buildBaristaDisplayCatalog(
+      snapshot.menuItems,
+      snapshot.catalogRevision,
+      inventoryItems,
+      baristaStoreItems,
+    );
+    setStoredMenuItems((current) =>
+      JSON.stringify(syncedMenuItems) === JSON.stringify(current) ? current : syncedMenuItems);
   }, [inventoryItems, baristaStoreItems]);
 
   useEffect(() => {
@@ -448,6 +730,9 @@ export default function BaristaPage() {
   const updateBaristaStoreStock = (
     lines: BaristaOrderLine[],
     direction: "consume" | "restore",
+    persist = false,
+    stockApplicationId?: string,
+    requiredSourceStockApplicationId?: string,
   ) => {
     const allStoreItems = readJson<Array<MainStoreItem & { lane?: "kitchen" | "barista" }>>(STORAGE_MAIN_STORE_ITEMS) ?? [];
     const otherStoreItems = allStoreItems.filter((entry) => entry.lane !== "barista");
@@ -456,16 +741,72 @@ export default function BaristaPage() {
       .map((entry) => ({ ...entry, lane: "barista" as const }));
     const nextBaristaItems = [...currentBaristaItems];
     let nextInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    const appliedEffects: Array<{
+      id: string;
+      target: "store" | "inventory";
+      itemId: string;
+      allowPending?: boolean;
+    }> = [];
 
-    for (const line of lines) {
-      const matchedItem = findStoreItemForMenuName(nextBaristaItems, line.name);
+    for (const [lineIndex, line] of lines.entries()) {
+      const effectSuffix = `${lineIndex}:${line.itemId ?? normalizeBaristaTarget(line.name)}`;
+      const effectId = stockApplicationId
+        ? `${stockApplicationId}:${effectSuffix}`
+        : undefined;
+      const requiredSourceEffectId = requiredSourceStockApplicationId
+        ? `${requiredSourceStockApplicationId}:${effectSuffix}`
+        : undefined;
+      const matchedItem = findStoreItemForMenuName(nextBaristaItems, line.name, line.storeItemId);
       if (!matchedItem) {
-        const inventoryMatch = nextInventoryItems.find((item) => {
+        const inventoryMatch = line.inventoryItemId
+          ? nextInventoryItems.find((item) => item.id === line.inventoryItemId)
+          : nextInventoryItems.find((item) => {
+          if (item.category !== "Bar") return false;
           const itemName = item.size ? `${item.name} ${item.size}` : item.name;
           return normalizeBaristaTarget(itemName) === normalizeBaristaTarget(line.name) || normalizeBaristaTarget(item.name) === normalizeBaristaTarget(line.name);
         });
 
-        if (!inventoryMatch) continue;
+        if (!inventoryMatch) {
+          if (line.storeItemId || line.inventoryItemId) {
+            return {
+              ok: false as const,
+              error: `The linked stock row for ${line.name} is missing. Ask a manager to relink the item before selling it.`,
+            };
+          }
+          continue;
+        }
+        if (effectId && hasStockEffect(inventoryMatch, effectId)) {
+          appliedEffects.push({ id: effectId, target: "inventory", itemId: inventoryMatch.id });
+          continue;
+        }
+        const sourceEffect = requiredSourceEffectId
+          ? inventoryMatch.stockEffects?.[requiredSourceEffectId]
+          : undefined;
+        if (direction === "restore" && requiredSourceEffectId && !sourceEffect) {
+          const pendingEffect = {
+            kind: "units" as const,
+            delta: 0,
+            requiresEffectId: requiredSourceEffectId,
+            inverseOfEffectId: requiredSourceEffectId,
+          };
+          nextInventoryItems = queueTrackedInventoryEffect(
+            nextInventoryItems,
+            inventoryMatch.category,
+            line.name,
+            effectId,
+            pendingEffect,
+            inventoryMatch.id,
+          );
+          if (effectId) {
+            appliedEffects.push({
+              id: effectId,
+              target: "inventory",
+              itemId: inventoryMatch.id,
+              allowPending: true,
+            });
+          }
+          continue;
+        }
         const availableUnits = typeof inventoryMatch.stock === "number" ? inventoryMatch.stock : 0;
         const availableTots = typeof inventoryMatch.totPerBottle === "number" && inventoryMatch.totPerBottle > 0
           ? availableUnits * inventoryMatch.totPerBottle - (typeof inventoryMatch.totSold === "number" ? inventoryMatch.totSold : 0)
@@ -475,7 +816,36 @@ export default function BaristaPage() {
           return { ok: false as const, error: `Not enough stock for ${line.name}.` };
         }
 
-        nextInventoryItems = adjustInventoryQuantity(nextInventoryItems, inventoryMatch.category, line.name, direction === "consume" ? -line.qty : line.qty);
+        const inventoryDelta = direction === "consume"
+          ? -line.qty
+          : sourceEffect
+            ? -sourceEffect.delta
+            : line.qty;
+        nextInventoryItems = applyTrackedInventoryEffect(
+          nextInventoryItems,
+          inventoryMatch.category,
+          line.name,
+          inventoryDelta,
+          effectId,
+          inventoryMatch.id,
+          false,
+          direction === "restore" && requiredSourceEffectId
+            ? {
+                ...(sourceEffect ?? { kind: "units" as const, delta: -line.qty }),
+                delta: inventoryDelta,
+                requiresEffectId: requiredSourceEffectId,
+                inverseOfEffectId: requiredSourceEffectId,
+              }
+            : undefined,
+        );
+        if (effectId) {
+          appliedEffects.push({
+            id: effectId,
+            target: "inventory",
+            itemId: inventoryMatch.id,
+            allowPending: direction === "restore" && Boolean(requiredSourceEffectId),
+          });
+        }
         continue;
       }
 
@@ -484,7 +854,113 @@ export default function BaristaPage() {
 
       const currentItem = nextBaristaItems[itemIndex];
       const inventoryLabel = getStoreItemLabel(currentItem);
-      if (isTotTrackedMenuItem(line.name)) {
+      const linkedInventoryItem = findInventoryStockEffectTarget(
+        nextInventoryItems,
+        "Bar",
+        inventoryLabel,
+        line.inventoryItemId,
+      );
+      const sourceStoreEffect = requiredSourceEffectId
+        ? currentItem.stockEffects?.[requiredSourceEffectId]
+        : undefined;
+      const sourceInventoryEffect = requiredSourceEffectId
+        ? linkedInventoryItem?.stockEffects?.[requiredSourceEffectId]
+        : undefined;
+      const applyInventoryMirror = (
+        delta: number,
+        effectOverride?: NonNullable<InventoryItem["stockEffects"]>[string],
+        forceUnitDelta = true,
+      ) => {
+        if (!linkedInventoryItem) return;
+        nextInventoryItems = applyTrackedInventoryEffect(
+          nextInventoryItems,
+          "Bar",
+          inventoryLabel,
+          delta,
+          effectId,
+          linkedInventoryItem.id,
+          forceUnitDelta,
+          effectOverride,
+        );
+        if (effectId) {
+          appliedEffects.push({
+            id: effectId,
+            target: "inventory",
+            itemId: linkedInventoryItem.id,
+            allowPending: direction === "restore" && Boolean(requiredSourceEffectId),
+          });
+        }
+      };
+      const applyOrQueueDependentInventoryRestore = () => {
+        if (!linkedInventoryItem || !effectId || !requiredSourceEffectId) return;
+        if (!sourceInventoryEffect) {
+          nextInventoryItems = queueTrackedInventoryEffect(
+            nextInventoryItems,
+            "Bar",
+            inventoryLabel,
+            effectId,
+            {
+              kind: "units",
+              delta: 0,
+              requiresEffectId: requiredSourceEffectId,
+              inverseOfEffectId: requiredSourceEffectId,
+            },
+            linkedInventoryItem.id,
+          );
+          appliedEffects.push({
+            id: effectId,
+            target: "inventory",
+            itemId: linkedInventoryItem.id,
+            allowPending: true,
+          });
+          return;
+        }
+        applyInventoryMirror(-sourceInventoryEffect.delta, {
+          ...sourceInventoryEffect,
+          delta: -sourceInventoryEffect.delta,
+          requiresEffectId: requiredSourceEffectId,
+          inverseOfEffectId: requiredSourceEffectId,
+        }, sourceInventoryEffect.kind !== "tots");
+      };
+      if (effectId && hasStockEffect(currentItem, effectId)) {
+        if (direction === "restore" && requiredSourceEffectId) {
+          applyOrQueueDependentInventoryRestore();
+        } else {
+          const existingStoreEffect = currentItem.stockEffects?.[effectId];
+          if (existingStoreEffect?.kind === "tots") {
+            applyInventoryMirror(existingStoreEffect.delta, existingStoreEffect, false);
+          } else {
+            applyInventoryMirror(currentItem.stockInventoryDeltas?.[effectId] ?? 0);
+          }
+        }
+        appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id });
+        continue;
+      }
+      if (direction === "restore" && requiredSourceEffectId && !sourceStoreEffect) {
+        nextBaristaItems[itemIndex] = queueStoreStockEffect(
+          currentItem,
+          effectId,
+          0,
+          {
+            kind: getTotLimit(currentItem) > 0 ? "tots" : "units",
+            delta: 0,
+            ...(getTotLimit(currentItem) > 0 ? { totLimit: getTotLimit(currentItem) } : {}),
+            requiresEffectId: requiredSourceEffectId,
+            inverseOfEffectId: requiredSourceEffectId,
+          },
+        );
+        applyOrQueueDependentInventoryRestore();
+        if (effectId) {
+          appliedEffects.push({
+            id: effectId,
+            target: "store",
+            itemId: currentItem.id,
+            allowPending: true,
+          });
+        }
+        continue;
+      }
+      if (getTotLimit(currentItem) > 0 || isTotTrackedMenuItem(line.name)) {
         const totLimit = getTotLimit(currentItem);
         if (totLimit <= 0) {
           return { ok: false as const, error: `Missing tot limit for ${line.name}.` };
@@ -499,34 +975,66 @@ export default function BaristaPage() {
 
           const totalTotSold = currentTotSold + line.qty;
           const bottlesConsumed = Math.floor(totalTotSold / totLimit);
-          nextBaristaItems[itemIndex] = {
-            ...currentItem,
-            stock: currentItem.stock - bottlesConsumed,
-            totLimit,
-            totSold: totalTotSold % totLimit,
-          };
-          nextInventoryItems = adjustInventoryQuantity(nextInventoryItems, "Bar", inventoryLabel, -bottlesConsumed);
+          nextBaristaItems[itemIndex] = trackStoreStockEffect(
+            {
+              ...currentItem,
+              stock: currentItem.stock - bottlesConsumed,
+              totLimit,
+              totSold: totalTotSold % totLimit,
+            },
+            effectId,
+            -bottlesConsumed,
+            { kind: "tots", delta: -line.qty, totLimit },
+          );
+          applyInventoryMirror(-line.qty, { kind: "tots", delta: -line.qty, totLimit }, false);
+          if (effectId) appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id });
           continue;
         }
 
-        const totalTotSold = currentTotSold - line.qty;
+        const restoreQty = sourceStoreEffect ? Math.abs(sourceStoreEffect.delta) : line.qty;
+        const restoreInventoryDelta = requiredSourceEffectId
+          ? -(currentItem.stockInventoryDeltas?.[requiredSourceEffectId] ?? 0)
+          : 0;
+        const dependentRestoreFields = requiredSourceEffectId
+          ? { requiresEffectId: requiredSourceEffectId, inverseOfEffectId: requiredSourceEffectId }
+          : {};
+        const totalTotSold = currentTotSold - restoreQty;
         if (totalTotSold >= 0) {
-          nextBaristaItems[itemIndex] = {
-            ...currentItem,
-            totLimit,
-            totSold: totalTotSold,
-          };
+          nextBaristaItems[itemIndex] = trackStoreStockEffect(
+            { ...currentItem, totLimit, totSold: totalTotSold },
+            effectId,
+            restoreInventoryDelta,
+            { kind: "tots", delta: restoreQty, totLimit, ...dependentRestoreFields },
+          );
+          if (requiredSourceEffectId) applyOrQueueDependentInventoryRestore();
+          else applyInventoryMirror(
+            restoreQty,
+            { kind: "tots", delta: restoreQty, totLimit, ...dependentRestoreFields },
+            false,
+          );
+          if (effectId) appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id, allowPending: Boolean(requiredSourceEffectId) });
           continue;
         }
 
         const bottlesRestored = Math.ceil(Math.abs(totalTotSold) / totLimit);
-        nextBaristaItems[itemIndex] = {
-          ...currentItem,
-          stock: currentItem.stock + bottlesRestored,
-          totLimit,
-          totSold: totalTotSold + bottlesRestored * totLimit,
-        };
-        nextInventoryItems = adjustInventoryQuantity(nextInventoryItems, "Bar", inventoryLabel, bottlesRestored);
+        nextBaristaItems[itemIndex] = trackStoreStockEffect(
+          {
+            ...currentItem,
+            stock: currentItem.stock + bottlesRestored,
+            totLimit,
+            totSold: totalTotSold + bottlesRestored * totLimit,
+          },
+          effectId,
+          requiredSourceEffectId ? restoreInventoryDelta : bottlesRestored,
+          { kind: "tots", delta: restoreQty, totLimit, ...dependentRestoreFields },
+        );
+        if (requiredSourceEffectId) applyOrQueueDependentInventoryRestore();
+        else applyInventoryMirror(
+          restoreQty,
+          { kind: "tots", delta: restoreQty, totLimit, ...dependentRestoreFields },
+          false,
+        );
+        if (effectId) appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id, allowPending: Boolean(requiredSourceEffectId) });
         continue;
       }
 
@@ -534,51 +1042,250 @@ export default function BaristaPage() {
         if (line.qty > currentItem.stock) {
           return { ok: false as const, error: `Not enough stock for ${line.name}.` };
         }
-        nextBaristaItems[itemIndex] = { ...currentItem, stock: currentItem.stock - line.qty };
-        nextInventoryItems = adjustInventoryQuantity(nextInventoryItems, "Bar", inventoryLabel, -line.qty);
+        nextBaristaItems[itemIndex] = trackStoreStockEffect(
+          { ...currentItem, stock: currentItem.stock - line.qty },
+          effectId,
+          -line.qty,
+          { kind: "units", delta: -line.qty },
+        );
+        applyInventoryMirror(-line.qty);
+        if (effectId) appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id });
         continue;
       }
 
-      nextBaristaItems[itemIndex] = { ...currentItem, stock: currentItem.stock + line.qty };
-      nextInventoryItems = adjustInventoryQuantity(nextInventoryItems, "Bar", inventoryLabel, line.qty);
+      const restoreUnits = sourceStoreEffect ? Math.abs(sourceStoreEffect.delta) : line.qty;
+      nextBaristaItems[itemIndex] = trackStoreStockEffect(
+        { ...currentItem, stock: currentItem.stock + restoreUnits },
+        effectId,
+        requiredSourceEffectId
+          ? -(currentItem.stockInventoryDeltas?.[requiredSourceEffectId] ?? 0)
+          : restoreUnits,
+        {
+          kind: "units",
+          delta: restoreUnits,
+          ...(requiredSourceEffectId
+            ? { requiresEffectId: requiredSourceEffectId, inverseOfEffectId: requiredSourceEffectId }
+            : {}),
+        },
+      );
+      if (requiredSourceEffectId) applyOrQueueDependentInventoryRestore();
+      else applyInventoryMirror(restoreUnits);
+      if (effectId) appliedEffects.push({ id: effectId, target: "store", itemId: currentItem.id, allowPending: Boolean(requiredSourceEffectId) });
     }
 
     const nextStoreItems = [...otherStoreItems, ...nextBaristaItems];
+    if (!persist) {
+      return {
+        ok: true as const,
+        appliedEffects,
+        storeItems: nextStoreItems,
+        inventoryItems: nextInventoryItems,
+      };
+    }
     setBaristaStoreItems(nextBaristaItems);
     writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
     writeJson(STORAGE_INVENTORY_ITEMS, nextInventoryItems);
-    return { ok: true as const };
+    return {
+      ok: true as const,
+      appliedEffects,
+      storeItems: nextStoreItems,
+      inventoryItems: nextInventoryItems,
+    };
   };
+
+  const confirmBaristaStockResult = async (
+    result: ReturnType<typeof updateBaristaStoreStock>,
+    appendRecords: Array<{
+      key: typeof STORAGE_WASTE | typeof STORAGE_STORE_USAGE;
+      record: Record<string, unknown>;
+    }> = [],
+  ) => {
+    if (!result.ok) return result;
+    if (!result.storeItems || !result.inventoryItems) return result;
+    try {
+      const committed = await commitBaristaStockEffectsAndLogs(
+        result.storeItems,
+        result.inventoryItems,
+        result.appliedEffects,
+        appendRecords,
+      );
+      if (!committed.ok) {
+        return { ok: false as const, error: "The stock change was not confirmed by shared storage." };
+      }
+      const committedStoreItems = committed.storeItems;
+      const committedInventoryItems = committed.inventoryItems;
+      const missingEffect = result.appliedEffects.find((effect) => {
+        const committedItem = effect.target === "store"
+          ? committedStoreItems.find((item) => item.id === effect.itemId)
+          : committedInventoryItems.find((item) => item.id === effect.itemId);
+        if (!committedItem) return true;
+        if (committedItem.appliedStockEffectIds?.includes(effect.id)) return false;
+        return !(effect.allowPending && committedItem.pendingStockEffects?.[effect.id]);
+      });
+      return missingEffect
+        ? { ok: false as const, error: "The stock change was not confirmed by shared storage." }
+        : { ok: true as const, appliedEffects: result.appliedEffects };
+    } catch {
+      return { ok: false as const, error: "The stock change could not be confirmed by shared storage." };
+    }
+  };
+
+  useEffect(() => {
+    if (!posHydrated || stockRecoveryInFlightRef.current) return;
+    const localAttempts = getPendingCheckoutAttempts(STORAGE_CHECKOUT_ATTEMPT);
+    const localAttemptIds = new Set(localAttempts.map((attempt) => attempt.checkoutId));
+    const recoverableByCheckoutId = new Map<string, {
+      checkoutId: string;
+      payment: BaristaPaymentRecord;
+      hasLocalAttempt: boolean;
+    }>();
+    localAttempts.forEach((attempt) => {
+      const payment = baristaPayments.find((entry) => entry.id === `bp-${attempt.checkoutId}`);
+      if (payment) {
+        recoverableByCheckoutId.set(attempt.checkoutId, {
+          checkoutId: attempt.checkoutId,
+          payment,
+          hasLocalAttempt: true,
+        });
+      }
+    });
+    // Shared payments are also recovery intents. This closes the legacy case
+    // where a device recorded a payment before its stock commit and never came
+    // back; any other Barista terminal can finish the stable effect exactly once.
+    baristaPayments.forEach((payment) => {
+      if (!payment.id.startsWith("bp-") || payment.stockRequired === false) return;
+      const checkoutId = payment.id.slice(3);
+      if (!checkoutId || recoverableByCheckoutId.has(checkoutId)) return;
+      recoverableByCheckoutId.set(checkoutId, {
+        checkoutId,
+        payment,
+        hasLocalAttempt: localAttemptIds.has(checkoutId),
+      });
+    });
+    const recoverableAttempts = Array.from(recoverableByCheckoutId.values());
+    if (recoverableAttempts.length === 0) return;
+
+    stockRecoveryInFlightRef.current = true;
+    void (async () => {
+      for (const { checkoutId, payment, hasLocalAttempt } of recoverableAttempts) {
+        if (
+          payment.stockRequired !== false &&
+          payment.ticketId &&
+          !tickets.some((ticket) => ticket.id === payment.ticketId)
+        ) {
+          // A cancelled/tombstoned order must never be consumed later by
+          // recovery after its original stock request was delayed.
+          if (hasLocalAttempt) clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, checkoutId);
+          continue;
+        }
+        if (payment.stockRequired === false || !Array.isArray(payment.lines) || payment.lines.length === 0) {
+          if (hasLocalAttempt) clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, checkoutId);
+          continue;
+        }
+        const preview = updateBaristaStoreStock(payment.lines, "consume", false, checkoutId);
+        if (!preview.ok) continue;
+        const currentStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+        const currentInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+        const needsRecovery = preview.appliedEffects.some((effect) => {
+          const item = effect.target === "store"
+            ? currentStoreItems.find((entry) => entry.id === effect.itemId)
+            : currentInventoryItems.find((entry) => entry.id === effect.itemId);
+          return !item || (!hasStockEffect(item, effect.id) && !(effect.allowPending && item.pendingStockEffects?.[effect.id]));
+        });
+        if (!needsRecovery) {
+          if (hasLocalAttempt) clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, checkoutId);
+          continue;
+        }
+        const result = await withBaristaStockEffectLock(async () =>
+          confirmBaristaStockResult(
+            updateBaristaStoreStock(payment.lines ?? [], "consume", false, checkoutId),
+          ));
+        if (result.ok && hasLocalAttempt) clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, checkoutId);
+      }
+    })().finally(() => {
+      stockRecoveryInFlightRef.current = false;
+    });
+  }, [baristaPayments, posHydrated, tickets]);
 
   const addUsage = async () => {
     const qty = Number(useQty);
     const entry = fromStoreEntries.find((item) => item.id === useEntryId);
     if (!entry || Number.isNaN(qty) || qty <= 0) return;
-    const remaining = entry.convertedQty - getUsedQty(entry.id);
-    if (qty > remaining) return;
     const approved = await confirm({
       title: "Record Barista Usage",
       description: `Are you sure you want to record ${qty} units used for ${entry.itemName}?`,
       actionLabel: "Record Usage",
     });
     if (!approved) return;
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_STORE_USAGE),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The latest usage and Inventory balances could not be refreshed. Nothing was recorded.");
+      return;
+    }
+    const existingUsage = readJson<StoreUsageLog[]>(STORAGE_STORE_USAGE) ?? [];
+    const remoteUsedQty = existingUsage
+      .filter((usage) => usage.destination === "barista" && usage.movementId === entry.id)
+      .reduce((sum, usage) => sum + usage.quantityUsed, 0);
+    const remaining = entry.convertedQty - remoteUsedQty;
+    if (qty > remaining) {
+      window.alert(`Only ${Math.max(0, remaining)} units remain for this store transfer.`);
+      return;
+    }
+    const createdAt = Date.now();
     const log: StoreUsageLog = {
-      id: `su-${Date.now()}`,
+      id: `su-${createCheckoutId("usage")}`,
       movementId: entry.id,
       destination: "barista",
       quantityUsed: qty,
-      usedAt: Date.now(),
+      usedAt: createdAt,
     };
-    const next = [log, ...usageLogs];
-    setUsageLogs(next);
-    const existingUsage = readJson<StoreUsageLog[]>(STORAGE_STORE_USAGE) ?? [];
-    const existingInventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
-    const nextInventory = adjustInventoryQuantity(existingInventory, "Bar", entry.itemName, -qty);
-    writeJson(
-      STORAGE_STORE_USAGE,
-      [...next, ...existingUsage.filter((i) => i.destination !== "barista")],
+    const effectId = `usage:${log.id}`;
+    const inventoryResult = await withBaristaStockEffectLock(async () => {
+      const existingInventory = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+      const target = findInventoryStockEffectTarget(existingInventory, "Bar", entry.itemName);
+      if (!target) return { ok: false as const, error: `No Inventory row is linked to ${entry.itemName}.` };
+      const available = typeof target.totPerBottle === "number" && target.totPerBottle > 0
+        ? target.stock * target.totPerBottle - (target.totSold ?? 0)
+        : target.stock;
+      if (qty > available) {
+        return { ok: false as const, error: `Not enough Inventory stock for ${entry.itemName}.` };
+      }
+      const nextInventory = applyTrackedInventoryEffect(
+        existingInventory,
+        "Bar",
+        entry.itemName,
+        -qty,
+        effectId,
+        target.id,
+        false,
+      );
+      const committed = await commitBaristaStockEffectsAndLogs(
+        readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+        nextInventory,
+        [{ id: effectId, target: "inventory", itemId: target.id }],
+        [{ key: STORAGE_STORE_USAGE, record: { ...log } }],
+        [{ movementId: entry.id, destination: "barista", maxQuantity: entry.convertedQty }],
+      );
+      return committed.ok
+        ? { ok: true as const, usage: committed.appendedValues[STORAGE_STORE_USAGE] ?? [] }
+        : {
+            ok: false as const,
+            error: committed.reason === "usage-capacity-exceeded"
+              ? "Another terminal used the remaining quantity first. Refresh the transfer balance and try again."
+              : "The usage and its Inventory deduction could not be confirmed together.",
+          };
+    });
+    if (!inventoryResult.ok) {
+      window.alert(inventoryResult.error);
+      return;
+    }
+    setUsageLogs(
+      (inventoryResult.usage as StoreUsageLog[]).filter((usage) => usage.destination === "barista"),
     );
-    writeJson(STORAGE_INVENTORY_ITEMS, nextInventory);
     setUseQty("1");
   };
 
@@ -586,6 +1293,35 @@ export default function BaristaPage() {
     () => normalizeBaristaMenuItems(storedMenuItems, baristaStoreItems),
     [baristaStoreItems, storedMenuItems],
   );
+
+  // Reconcile against the same normalized catalog rendered by the POS. Missing
+  // items are removed, so a manager deletion can never remain chargeable.
+  useEffect(() => {
+    if (!posHydrated) return;
+    const reconciliation = reconcileBaristaCartWithCatalog(cart, menuItems);
+    if (!reconciliation.changed) return;
+    setCart(reconciliation.nextCart);
+    setCartCatalogNotice(
+      reconciliation.removedCount > 0
+        ? `Removed unavailable item(s): ${reconciliation.removedNames.join(", ")}. Review the ticket before ordering.`
+        : `The manager updated: ${reconciliation.changedNames.join(", ")}. Review the new price before ordering.`,
+    );
+  }, [cart, menuItems, posHydrated]);
+
+  useEffect(() => {
+    if (!posHydrated || !pendingOrder) return;
+    const reconciliation = reconcileBaristaOrderLinesWithCatalog(pendingOrder.lines, menuItems);
+    if (!reconciliation.changed && reconciliation.removedCount === 0) return;
+    setCart(reconciliation.nextCart);
+    setPendingOrder(null);
+    setShowSettlementPopup(false);
+    setShowPayNowPopup(false);
+    setCartCatalogNotice("The manager changed the menu during settlement. Review the refreshed ticket before ordering again.");
+    toast({
+      title: reconciliation.removedCount > 0 ? "Menu item removed" : "Menu price updated",
+      description: "The cart now has the manager's latest menu. Review it before placing the order again.",
+    });
+  }, [menuItems, pendingOrder, posHydrated]);
 
   const filteredMenu = useMemo(
     () => {
@@ -653,21 +1389,6 @@ export default function BaristaPage() {
       return itemNames.some((value) => entryNames.includes(value));
     });
 
-  const baristaSalesByItem = useMemo(() => {
-    const salesMap = new Map<string, number>();
-
-    baristaPayments.forEach((payment) => {
-      if (!Array.isArray(payment.lines)) return;
-
-      payment.lines.forEach((line) => {
-        const key = normalizeBaristaTarget(line.name);
-        salesMap.set(key, (salesMap.get(key) ?? 0) + line.qty);
-      });
-    });
-
-    return salesMap;
-  }, [baristaPayments]);
-
   const baristaMenuPriceByItem = useMemo(() => {
     const priceMap = new Map<string, number>();
 
@@ -680,6 +1401,52 @@ export default function BaristaPage() {
 
     return priceMap;
   }, [menuItems]);
+
+  const baristaMenuPriceByLegacySalesKey = useMemo(() => {
+    const priceMap = new Map<string, number>();
+    menuItems.forEach((item) => {
+      if (typeof item.price === "number" && item.price > 0) {
+        priceMap.set(getBaristaLegacySalesKey(item.name), item.price);
+      }
+    });
+    return priceMap;
+  }, [menuItems]);
+
+  const baristaMenuPriceByItemId = useMemo(() => {
+    const priceMap = new Map<string, number>();
+    menuItems.forEach((item) => {
+      if (typeof item.price === "number" && item.price > 0) priceMap.set(item.id, item.price);
+    });
+    return priceMap;
+  }, [menuItems]);
+
+  const baristaSalesByItem = useMemo(() => {
+    const salesMap = new Map<string, { quantity: number; revenue: number; label: string }>();
+
+    baristaPayments.forEach((payment) => {
+      if (!Array.isArray(payment.lines) || payment.lines.length === 0) return;
+      const allocatedAmounts = allocateBaristaPaymentAmounts(
+        payment,
+        payment.lines,
+        (line) =>
+          (line.itemId ? baristaMenuPriceByItemId.get(line.itemId) : undefined) ??
+          baristaMenuPriceByLegacySalesKey.get(getBaristaLegacySalesKey(line.name)) ??
+          0,
+      );
+
+      payment.lines.forEach((line, index) => {
+        const key = getBaristaOrderLineSalesKey(line);
+        const current = salesMap.get(key) ?? { quantity: 0, revenue: 0, label: line.name };
+        salesMap.set(key, {
+          quantity: current.quantity + line.qty,
+          revenue: current.revenue + (allocatedAmounts[index] ?? 0),
+          label: line.name || current.label,
+        });
+      });
+    });
+
+    return salesMap;
+  }, [baristaMenuPriceByItemId, baristaMenuPriceByLegacySalesKey, baristaPayments]);
 
   const baristaMenuBuyingPriceByItem = useMemo(() => {
     const priceMap = new Map<string, number>();
@@ -695,9 +1462,27 @@ export default function BaristaPage() {
   }, [menuItems]);
 
   const baristaInventoryRows = useMemo(
-    () =>
-      baristaStoreItems.map((item) => {
+    () => {
+      const seenMenuItemIds = new Set<string>();
+      const linkedStoreItemIds = new Set(
+        menuItems.map((item) => item.storeItemId).filter((id): id is string => Boolean(id)),
+      );
+      const orderedStoreItems = [...baristaStoreItems].sort(
+        (left, right) => Number(linkedStoreItemIds.has(right.id)) - Number(linkedStoreItemIds.has(left.id)),
+      );
+      return orderedStoreItems.flatMap((item) => {
         const inventoryMatch = resolveBaristaInventoryItem(item);
+        const expectedMenuName = getTotLimit(item) > 0
+          ? `${getStoreItemLabel(item)} (TOTS)`
+          : getStoreItemLabel(item);
+        const matchedMenuItem = menuItems.find(
+          (entry) =>
+            entry.id === item.id ||
+            entry.storeItemId === item.id ||
+            (!!inventoryMatch && (entry.inventoryItemId === inventoryMatch.id || entry.id === inventoryMatch.id)),
+        ) ?? menuItems.find(
+          (entry) => getBaristaLegacySalesKey(entry.name) === getBaristaLegacySalesKey(expectedMenuName),
+        );
         const menuBuyingPrice = baristaMenuBuyingPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item)));
         const buyingPrice =
           typeof menuBuyingPrice === "number" && menuBuyingPrice > 0
@@ -708,7 +1493,9 @@ export default function BaristaPage() {
               ? inventoryMatch.buyingPrice
               : 0;
         const sellingPrice =
-          typeof baristaMenuPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item))) === "number" &&
+          typeof matchedMenuItem?.price === "number" && matchedMenuItem.price > 0
+            ? matchedMenuItem.price
+            : typeof baristaMenuPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item))) === "number" &&
           (baristaMenuPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item))) ?? 0) > 0
             ? (baristaMenuPriceByItem.get(normalizeBaristaTarget(getStoreItemLabel(item))) ?? 0)
             : typeof item.sellingPrice === "number" && item.sellingPrice > 0
@@ -721,13 +1508,21 @@ export default function BaristaPage() {
               : typeof inventoryMatch?.price === "number" && inventoryMatch.price > 0
                 ? inventoryMatch.price
                 : 0;
-        const quantitySold = baristaSalesByItem.get(normalizeBaristaTarget(getStoreItemLabel(item))) ?? 0;
+        const idSales = matchedMenuItem ? baristaSalesByItem.get(`item:${matchedMenuItem.id}`) : undefined;
+        const legacySales = baristaSalesByItem.get(getBaristaLegacySalesKey(expectedMenuName));
+        const quantitySold = (idSales?.quantity ?? 0) + (legacySales?.quantity ?? 0);
         const capital = item.stock * buyingPrice;
-        const revenue = quantitySold * sellingPrice;
+        const revenue =
+          (idSales?.revenue ?? 0) +
+          (legacySales?.revenue ?? 0);
         const profitLoss = revenue - capital;
 
-        return {
+        if (matchedMenuItem?.id && seenMenuItemIds.has(matchedMenuItem.id)) return [];
+        if (matchedMenuItem?.id) seenMenuItemIds.add(matchedMenuItem.id);
+
+        return [{
           ...item,
+          menuItemId: matchedMenuItem?.id,
           displayName: getStoreItemLabel(item),
           buyingPrice,
           sellingPrice,
@@ -735,10 +1530,70 @@ export default function BaristaPage() {
           capital,
           revenue,
           profitLoss,
-        };
-      }),
-    [baristaMenuBuyingPriceByItem, baristaMenuPriceByItem, baristaSalesByItem, baristaStoreItems, inventoryItems],
+        }];
+      });
+    },
+    [baristaMenuBuyingPriceByItem, baristaMenuPriceByItem, baristaSalesByItem, baristaStoreItems, inventoryItems, menuItems],
   );
+
+  const baristaFinanceRows = useMemo(() => {
+    const matchedMenuItemIds = new Set(
+      baristaInventoryRows
+        .map((row) => row.menuItemId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    const menuOnlyRows = menuItems
+      .filter((menuItem) => !matchedMenuItemIds.has(menuItem.id))
+      .map((menuItem) => {
+        const idSales = baristaSalesByItem.get(`item:${menuItem.id}`);
+        const legacySales = baristaSalesByItem.get(getBaristaLegacySalesKey(menuItem.name));
+        const quantitySold = (idSales?.quantity ?? 0) + (legacySales?.quantity ?? 0);
+        const revenue = (idSales?.revenue ?? 0) + (legacySales?.revenue ?? 0);
+        const buyingPrice =
+          typeof menuItem.buyingPrice === "number" && menuItem.buyingPrice > 0
+            ? menuItem.buyingPrice
+            : 0;
+        const sellingPrice = typeof menuItem.price === "number" && menuItem.price > 0 ? menuItem.price : 0;
+
+        return {
+          id: `menu-finance-${menuItem.id}`,
+          menuItemId: menuItem.id,
+          name: menuItem.name,
+          displayName: menuItem.name,
+          stock: 0,
+          unit: "",
+          buyingPrice,
+          sellingPrice,
+          quantitySold,
+          capital: 0,
+          revenue,
+          profitLoss: revenue,
+        };
+      });
+
+    const consumedItemIds = new Set([
+      ...matchedMenuItemIds,
+      ...menuItems.map((item) => item.id),
+    ]);
+    const archivedRows = Array.from(baristaSalesByItem.entries())
+      .filter(([key]) => key.startsWith("item:") && !consumedItemIds.has(key.slice(5)))
+      .map(([key, sales]) => ({
+        id: `archived-finance-${key.slice(5)}`,
+        menuItemId: key.slice(5),
+        name: sales.label,
+        displayName: `${sales.label} (Archived)`,
+        stock: 0,
+        unit: "",
+        buyingPrice: 0,
+        sellingPrice: sales.quantity > 0 ? sales.revenue / sales.quantity : 0,
+        quantitySold: sales.quantity,
+        capital: 0,
+        revenue: sales.revenue,
+        profitLoss: sales.revenue,
+      }));
+
+    return [...baristaInventoryRows, ...menuOnlyRows, ...archivedRows];
+  }, [baristaInventoryRows, baristaSalesByItem, menuItems]);
 
   // Editable per-item pricing rows for the manager Inventory tab. Driven by the
   // POS menu so every drink gets editable Buying and Selling Price fields.
@@ -747,9 +1602,12 @@ export default function BaristaPage() {
       menuItems.map((menuItem) => {
         const target = normalizeBaristaTarget(menuItem.name);
         const storeMatch = baristaStoreItems.find(
-          (entry) => normalizeBaristaTarget(getStoreItemLabel(entry)) === target,
+          (entry) => entry.id === menuItem.storeItemId || normalizeBaristaTarget(getStoreItemLabel(entry)) === target,
         );
-        const inventoryMatch = inventoryItems.find((entry) => {
+        const inventoryMatch = inventoryItems.find(
+          (entry) => entry.id === menuItem.inventoryItemId || entry.id === menuItem.id,
+        ) ?? inventoryItems.find((entry) => {
+          if (entry.category !== "Bar") return false;
           const entryNames = [
             entry.name,
             entry.size ? `${entry.name} ${entry.size}` : entry.name,
@@ -767,9 +1625,14 @@ export default function BaristaPage() {
         const sellingPrice = typeof menuItem.price === "number" && menuItem.price > 0 ? menuItem.price : 0;
         const stock = typeof storeMatch?.stock === "number" ? storeMatch.stock : 0;
         const unit = storeMatch?.unit ?? "";
-        const quantitySold = baristaSalesByItem.get(target) ?? 0;
+        const idSales = baristaSalesByItem.get(`item:${menuItem.id}`);
+        const legacySales = baristaSalesByItem.get(getBaristaLegacySalesKey(menuItem.name));
+        const quantitySold = (idSales?.quantity ?? 0) + (legacySales?.quantity ?? 0);
         return {
           id: menuItem.id,
+          menuItemId: menuItem.id,
+          inventoryItemId: inventoryMatch?.id ?? menuItem.inventoryItemId,
+          storeItemId: storeMatch?.id ?? menuItem.storeItemId,
           name: menuItem.name,
           category: menuItem.category,
           buyingPrice,
@@ -785,44 +1648,158 @@ export default function BaristaPage() {
   // Persist a manual buying/selling price change from the manager Inventory tab
   // onto the POS menu item (matched by name). Selling price drives the POS;
   // buying price is kept for costing only.
-  const updateBaristaItemPricing = (menuName: string, patch: { price?: number; buyingPrice?: number }) => {
+  const updateBaristaItemPricing = async (menuId: string, menuName: string, patch: { price?: number; buyingPrice?: number }) => {
     const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The shared Barista menu could not be refreshed. No price change was saved; reconnect and try again.");
+      return;
+    }
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
       activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
     );
-    const target = normalizeBaristaTarget(menuName);
+    const sourceMenuItems =
+      (snapshot.catalogRevision ?? 0) === 0 && snapshot.menuItems.length === 0
+        ? menuItems
+        : snapshot.menuItems;
+    const sourceMenuItem = sourceMenuItems.find((item) => item.id === menuId);
+    const targetKey = getBaristaLegacySalesKey(menuName);
+    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    const linkedInventoryItem = latestInventoryItems.find(
+      (entry) => entry.id === sourceMenuItem?.inventoryItemId || entry.id === menuId,
+    ) ?? latestInventoryItems.find(
+      (entry) => entry.category === "Bar" && getBaristaLegacySalesKey(getBaristaInventoryLabel(entry)) === targetKey,
+    );
+    const allStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    const linkedStoreItem = allStoreItems.find(
+      (entry) =>
+        entry.lane === "barista" &&
+        (entry.id === sourceMenuItem?.storeItemId || getBaristaLegacySalesKey(getBaristaMenuLabel(entry)) === targetKey),
+    );
     let matched = false;
-    const next = snapshot.menuItems.map((item) => {
-      if (normalizeBaristaTarget(item.name) === target) {
+    const next = sourceMenuItems.map((item) => {
+      if (item.id === menuId) {
         matched = true;
-        return { ...item, ...patch };
+        return {
+          ...item,
+          ...(linkedInventoryItem ? { inventoryItemId: linkedInventoryItem.id } : {}),
+          ...(linkedStoreItem ? { storeItemId: linkedStoreItem.id } : {}),
+          ...patch,
+        };
       }
       return item;
     });
     if (!matched) {
-      const menuRef = menuItems.find((entry) => normalizeBaristaTarget(entry.name) === target);
-      if (menuRef) next.push({ ...menuRef, ...patch });
+      // Legacy snapshots may not share the row ID. Fall back to one exact
+      // display-name match only; broad target matching collapses bottle/TOTS
+      // variants and used to change both prices together.
+      const exactName = menuName.trim().replace(/\s+/g, " ").toLowerCase();
+      const legacyIndex = next.findIndex((entry) => entry.name.trim().replace(/\s+/g, " ").toLowerCase() === exactName);
+      if (legacyIndex >= 0) {
+        next[legacyIndex] = { ...next[legacyIndex], ...patch };
+        matched = true;
+      }
     }
-    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
-    setStoredMenuItems(next);
+    if (!matched) return;
+    const nextStoreItems = allStoreItems.map((entry) =>
+      linkedStoreItem && entry.id === linkedStoreItem.id
+        ? {
+            ...entry,
+            ...(typeof patch.price === "number" ? { sellingPrice: patch.price } : {}),
+            ...(typeof patch.buyingPrice === "number" ? { buyingPrice: patch.buyingPrice } : {}),
+          }
+        : entry,
+    );
+    const nextInventoryItems = latestInventoryItems.map((entry) =>
+      linkedInventoryItem && entry.id === linkedInventoryItem.id
+        ? {
+            ...entry,
+            ...(typeof patch.price === "number" ? { sellingPrice: patch.price, price: patch.price } : {}),
+            ...(typeof patch.buyingPrice === "number" ? { buyingPrice: patch.buyingPrice } : {}),
+          }
+        : entry,
+    );
+    const catalogCommit = await commitBaristaCatalogAndStockMutation(
+      snapshot,
+      next,
+      allStoreItems,
+      nextStoreItems,
+      latestInventoryItems,
+      nextInventoryItems,
+    );
+    if (!catalogCommit.ok) {
+      window.alert(catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
+        ? "Another manager or sale changed the Barista menu or stock first. Nothing was overwritten; review it and try the price edit again."
+        : "The Barista price could not be confirmed in shared storage. Nothing was saved; reconnect and try again.");
+      return;
+    }
+    setStoredMenuItems(buildBaristaDisplayCatalog(
+      catalogCommit.value.menuItems,
+      catalogCommit.value.catalogRevision,
+      catalogCommit.inventoryItems,
+      catalogCommit.storeItems,
+    ));
+    setBaristaStoreItems(catalogCommit.storeItems.filter((entry) => entry.lane === "barista"));
+    setInventoryItems(catalogCommit.inventoryItems);
   };
 
   // Set the available barista stock quantity for a menu item from the manager
   // Inventory tab. Quantity lives on the barista-lane store item (created on
   // demand for menu-only items) so POS stock checks and
   // sale deductions keep working.
-  const updateBaristaItemStock = (
-    menuItem: { name: string; category: string; buyingPrice?: number; sellingPrice?: number },
+  const updateBaristaItemStock = async (
+    menuItem: {
+      menuItemId: string;
+      inventoryItemId?: string;
+      storeItemId?: string;
+      name: string;
+      category: string;
+      buyingPrice?: number;
+      sellingPrice?: number;
+    },
     qty: number,
   ) => {
+    const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("Shared Barista stock could not be refreshed. No quantity change was saved; reconnect and try again.");
+      return;
+    }
+    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+    );
+    const sourceMenuItems =
+      (snapshot.catalogRevision ?? 0) === 0 && snapshot.menuItems.length === 0
+        ? menuItems
+        : snapshot.menuItems;
+    const currentMenuItem = sourceMenuItems.find((item) => item.id === menuItem.menuItemId);
+    if (!currentMenuItem) {
+      window.alert("This Barista item was removed by another manager. Nothing was changed.");
+      return;
+    }
     const allStoreItems = readJson<Array<MainStoreItem & { lane?: "kitchen" | "barista" }>>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
     const target = normalizeBaristaTarget(menuItem.name);
     const index = allStoreItems.findIndex(
-      (entry) => entry.lane === "barista" && normalizeBaristaTarget(getStoreItemLabel(entry)) === target,
+      (entry) =>
+        entry.lane === "barista" &&
+        (entry.id === currentMenuItem?.storeItemId ||
+          entry.id === menuItem.storeItemId ||
+          normalizeBaristaTarget(getStoreItemLabel(entry)) === target),
     );
 
     let nextStoreItems: Array<MainStoreItem & { lane?: "kitchen" | "barista" }>;
+    let resolvedStoreItemId: string;
     if (index >= 0) {
+      resolvedStoreItemId = allStoreItems[index].id;
       nextStoreItems = allStoreItems.map((entry, idx) => (idx === index ? { ...entry, stock: qty } : entry));
     } else {
       const seedRef = BARISTA_INVENTORY_SEED.find(
@@ -841,11 +1818,71 @@ export default function BaristaPage() {
         buyingPrice: typeof menuItem.buyingPrice === "number" ? menuItem.buyingPrice : seedRef?.buyingPrice ?? 0,
         sellingPrice: typeof menuItem.sellingPrice === "number" ? menuItem.sellingPrice : seedRef?.sellingPrice ?? 0,
       };
+      resolvedStoreItemId = newStoreItem.id;
       nextStoreItems = [...allStoreItems, newStoreItem];
     }
-
-    setBaristaStoreItems(nextStoreItems.filter((entry) => entry.lane === "barista"));
-    writeJson(STORAGE_MAIN_STORE_ITEMS, nextStoreItems);
+    const inventoryTarget = latestInventoryItems.find((entry) =>
+      entry.id === currentMenuItem.inventoryItemId || entry.id === menuItem.inventoryItemId,
+    ) ?? latestInventoryItems.find((entry) =>
+      entry.category === "Bar" && normalizeBaristaTarget(getBaristaInventoryLabel(entry)) === target,
+    );
+    const resolvedInventoryId = inventoryTarget?.id
+      ?? `inv-barista-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    const nextInventoryItems = inventoryTarget
+      ? latestInventoryItems.map((entry) =>
+          entry.id === inventoryTarget.id ? { ...entry, stock: qty } : entry)
+      : [
+          {
+            id: resolvedInventoryId,
+            barcode: currentMenuItem.barcode ?? "",
+            name: menuItem.name,
+            category: "Bar",
+            subCategory: menuItem.category,
+            size: "",
+            stock: qty,
+            totSold: 0,
+            buyingPrice: menuItem.buyingPrice ?? 0,
+            sellingPrice: menuItem.sellingPrice ?? currentMenuItem.price,
+            price: menuItem.sellingPrice ?? currentMenuItem.price,
+            status: "ACTIVE" as const,
+            minStock: 0,
+            unit: "Bottle",
+            damages: 0,
+            receivedStock: 0,
+          },
+          ...latestInventoryItems,
+        ];
+    const nextMenuItems = sourceMenuItems.map((item) =>
+      item.id === currentMenuItem.id
+        ? {
+            ...item,
+            storeItemId: resolvedStoreItemId,
+            inventoryItemId: resolvedInventoryId,
+          }
+        : item,
+    );
+    const catalogCommit = await commitBaristaCatalogAndStockMutation(
+      snapshot,
+      nextMenuItems,
+      allStoreItems,
+      nextStoreItems,
+      latestInventoryItems,
+      nextInventoryItems,
+    );
+    if (!catalogCommit.ok) {
+      window.alert(catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
+        ? "Another manager or sale changed the Barista menu or stock first. Nothing was overwritten; review the latest quantity and try again."
+        : "The Barista quantity could not be confirmed in shared storage. Nothing was saved; reconnect and try again.");
+      return;
+    }
+    setBaristaStoreItems(catalogCommit.storeItems.filter((entry) => entry.lane === "barista"));
+    setInventoryItems(catalogCommit.inventoryItems);
+    setStoredMenuItems(buildBaristaDisplayCatalog(
+      catalogCommit.value.menuItems,
+      catalogCommit.value.catalogRevision,
+      catalogCommit.inventoryItems,
+      catalogCommit.storeItems,
+    ));
   };
 
   const recordWaste = async (item: BaristaMenuItem) => {
@@ -856,38 +1893,48 @@ export default function BaristaPage() {
       actionLabel: "Yes, Record Waste",
     });
     if (!approved) return;
-
-    const stockResult = updateBaristaStoreStock([{ name: item.name, qty: 1 }], "consume");
-    if (!stockResult.ok) {
-      window.alert(stockResult.error);
-      return;
-    }
-
     const wasteLog: BaristaWasteLog = {
-      id: `bw-${Date.now()}`,
+      id: `bw-${createCheckoutId("waste")}`,
       name: item.name,
       qty: 1,
       createdAt: Date.now(),
     };
-    const existing = readJson<BaristaWasteLog[]>(STORAGE_WASTE) ?? [];
-    writeJson(STORAGE_WASTE, [wasteLog, ...existing]);
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_WASTE),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The latest stock and waste log could not be refreshed. Nothing was recorded.");
+      return;
+    }
+    const stockResult = await withBaristaStockEffectLock(async () =>
+      confirmBaristaStockResult(updateBaristaStoreStock([
+      {
+        itemId: item.id,
+        inventoryItemId: item.inventoryItemId,
+        storeItemId: item.storeItemId,
+        name: item.name,
+        qty: 1,
+      },
+      ], "consume", false, `waste:${wasteLog.id}`), [{
+        key: STORAGE_WASTE,
+        record: { ...wasteLog },
+      }]));
+    if (!stockResult.ok) {
+      window.alert(stockResult.error);
+      return;
+    }
     window.alert(`Recorded waste: 1 x ${item.name}`);
   };
 
   const baristaCapitalTotal = useMemo(
-    () => baristaInventoryRows.reduce((sum, item) => sum + item.capital, 0),
-    [baristaInventoryRows],
+    () => baristaFinanceRows.reduce((sum, item) => sum + item.capital, 0),
+    [baristaFinanceRows],
   );
   const totalBaristaRevenue = useMemo(
-    () => {
-      const itemizedRevenue = baristaInventoryRows.reduce((sum, item) => sum + item.revenue, 0);
-      const fallbackRevenue = baristaPayments
-        .filter((payment) => !Array.isArray(payment.lines) || payment.lines.length === 0)
-        .reduce((sum, payment) => sum + (payment.total || 0), 0);
-
-      return itemizedRevenue + fallbackRevenue;
-    },
-    [baristaInventoryRows, baristaPayments],
+    () => baristaPayments.reduce((sum, payment) => sum + (payment.total || 0), 0),
+    [baristaPayments],
   );
   const baristaProfitLoss = useMemo(
     () => totalBaristaRevenue - baristaCapitalTotal,
@@ -922,13 +1969,16 @@ export default function BaristaPage() {
           ];
         }
 
+        const allocatedAmounts = allocateBaristaPaymentAmounts(
+          payment,
+          payment.lines,
+          (line) =>
+            (line.itemId ? baristaMenuPriceByItemId.get(line.itemId) : undefined) ??
+            baristaMenuPriceByItem.get(normalizeBaristaTarget(line.name)) ??
+            0,
+        );
+
         return payment.lines.map((line, index) => {
-          const price = baristaMenuPriceByItem.get(normalizeBaristaTarget(line.name)) ?? 0;
-          const amount = price > 0
-            ? line.qty * price
-            : payment.lines?.length === 1
-              ? payment.total
-              : 0;
 
           return {
             id: `${payment.id}-${index}`,
@@ -942,11 +1992,11 @@ export default function BaristaPage() {
             destination: payment.destination,
             method: payment.method,
             status: payment.status,
-            amount,
+            amount: allocatedAmounts[index] ?? 0,
           };
         });
       }),
-    [baristaMenuPriceByItem, filteredDirectorSalesPayments],
+    [baristaMenuPriceByItem, baristaMenuPriceByItemId, filteredDirectorSalesPayments],
   );
   const directorSalesQuantityTotal = useMemo(
     () => directorSalesRows.reduce((sum, row) => sum + row.quantity, 0),
@@ -973,6 +2023,15 @@ export default function BaristaPage() {
     setDeletingPaymentId(paymentId);
     try {
       const activeBaristaKey = getActiveBaristaStateKey();
+      const hydration = await Promise.all([
+        hydrateStorageKeyFromFirebase(activeBaristaKey),
+        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      ]);
+      if (!hydration.every((result) => result.ok)) {
+        window.alert("Shared Barista sales and stock could not be refreshed. Nothing was deleted; reconnect and try again.");
+        return;
+      }
       const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
         activeBaristaKey,
         STORAGE_TICKETS,
@@ -988,22 +2047,59 @@ export default function BaristaPage() {
       }
 
       const linkedTicket = snapshot.tickets.find((ticket) => ticket.id === currentPayment.ticketId);
-      if (linkedTicket && Array.isArray(linkedTicket.lines) && linkedTicket.lines.length > 0) {
-        const stockResult = updateBaristaStoreStock(linkedTicket.lines, "restore");
-        if (!stockResult.ok) {
-          window.alert(stockResult.error);
-          return;
-        }
+      const sourceStockApplicationId = currentPayment.id?.startsWith("bp-")
+        ? currentPayment.id.slice(3)
+        : currentPayment.ticketId?.startsWith("bt-")
+          ? currentPayment.ticketId.slice(3)
+          : currentPayment.ticketId ?? currentPayment.id ?? getPosPaymentSyncKey(currentPayment);
+      const voidLines = currentPayment.stockRequired === false
+        ? []
+        : Array.isArray(linkedTicket?.lines) && linkedTicket.lines.length > 0
+          ? linkedTicket.lines
+          : Array.isArray(currentPayment.lines)
+            ? currentPayment.lines
+            : [];
+      const stockCandidate = updateBaristaStoreStock(
+        voidLines,
+        "restore",
+        false,
+        `compensate:${sourceStockApplicationId}`,
+        sourceStockApplicationId,
+      );
+      if (!stockCandidate.ok || !stockCandidate.storeItems || !stockCandidate.inventoryItems) {
+        window.alert(stockCandidate.ok ? "The shared stock compensation could not be prepared." : stockCandidate.error);
+        return;
       }
 
-      const nextPayments = snapshot.payments.filter((entry) => entry.id !== paymentId);
-      const nextTickets = snapshot.tickets.filter((ticket) => ticket.id !== currentPayment.ticketId);
       const deletedPaymentKeys = Array.from(new Set([...(snapshot.deletedPaymentKeys ?? []), getPosPaymentSyncKey(currentPayment)]));
-      setBaristaPayments(nextPayments);
-      setTickets(nextTickets);
-      setTicketSeq(snapshot.ticketSeq);
-      setStoredMenuItems(snapshot.menuItems);
-      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, nextPayments, snapshot.menuItems, deletedPaymentKeys);
+      const deletedTicketIds = currentPayment.ticketId
+        ? Array.from(new Set([...(snapshot.deletedTicketIds ?? []), currentPayment.ticketId]))
+        : snapshot.deletedTicketIds;
+      const voidResult = await commitBaristaVoidWithStock(
+        snapshot,
+        [],
+        deletedPaymentKeys,
+        deletedTicketIds ?? [],
+        stockCandidate.storeItems,
+        stockCandidate.inventoryItems,
+        stockCandidate.appliedEffects,
+      );
+      if (!voidResult.ok) {
+        window.alert(voidResult.reason === "stock-conflict"
+          ? "Stock changed while this sale was being deleted. Nothing was deleted or restored; refresh and try again."
+          : "The shared sale deletion could not be confirmed. Nothing was deleted or restored; reconnect and try again.");
+        return;
+      }
+      const committedSnapshot = voidResult.value;
+      setBaristaPayments(committedSnapshot.payments);
+      setTickets(committedSnapshot.tickets);
+      setTicketSeq(committedSnapshot.ticketSeq);
+      setStoredMenuItems(buildBaristaDisplayCatalog(
+        committedSnapshot.menuItems,
+        committedSnapshot.catalogRevision,
+        readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+        readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+      ));
       toast({ title: "Barista sale deleted", description: `${currentPayment.code} was removed and sales totals were updated.` });
     } finally {
       setDeletingPaymentId(null);
@@ -1033,7 +2129,7 @@ export default function BaristaPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {baristaInventoryRows.map((item) => (
+            {baristaFinanceRows.map((item) => (
               <TableRow key={item.id}>
                 <TableCell className="font-bold">{item.displayName}</TableCell>
                 <TableCell className="font-bold">{item.stock} {item.unit}</TableCell>
@@ -1051,7 +2147,7 @@ export default function BaristaPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {baristaInventoryRows.length === 0 && (
+            {baristaFinanceRows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={8} className="py-10 text-center font-black uppercase text-[10px] tracking-widest text-muted-foreground">
                   No barista finance records
@@ -1267,11 +2363,18 @@ export default function BaristaPage() {
     });
     if (!approved) return;
     setCart([]);
+    setCartCatalogNotice("");
   };
 
-  const placeTicket = () => {
+  const placeTicket = async () => {
     if (isDirector) return;
     if (cart.length === 0) return;
+
+    if (cartCatalogNotice) {
+      setCartCatalogNotice("");
+      window.alert("The ticket has been refreshed from the manager's latest menu. Review it once, then place the order again.");
+      return;
+    }
 
     const destination =
       serviceMode === "room-service"
@@ -1296,92 +2399,357 @@ export default function BaristaPage() {
       return;
     }
 
-      setPendingOrder({
-        mode: serviceMode,
-        destination,
-        lines: cart.map((line) => ({ name: line.item.name, qty: line.qty })),
-        total: subtotal,
-        createdAt: bookingTimestamp,
-        isPastBooking: bookingEntryMode === "past",
-        paymentMethod: bookingEntryMode === "past" ? pastPaymentMethod : undefined,
-      });
-      setShowPayNowPopup(false);
-      setShowSettlementPopup(true);
-    };
-
-  const finalizeOrder = async (status: BaristaPaymentStatus, method: BaristaPaymentMethod) => {
-    if (isDirector) return;
-    if (!pendingOrder) return;
-
-    if (!pendingOrder.isPastBooking) {
-      const stockResult = updateBaristaStoreStock(pendingOrder.lines, "consume");
-      if (!stockResult.ok) {
-        window.alert(stockResult.error);
-        return;
-      }
+    const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The latest Barista menu and stock could not be refreshed. No order was placed; reconnect and try again.");
+      return;
     }
+    const latestSnapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      activeBaristaKey,
+      STORAGE_TICKETS,
+      STORAGE_SEQ,
+      STORAGE_PAYMENTS,
+      STORAGE_MENU,
+      490,
+    );
+    const allStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    const latestStoreItems = allStoreItems.filter((item) => item.lane === "barista");
+    const latestCatalog = buildBaristaDisplayCatalog(
+      latestSnapshot.menuItems,
+      latestSnapshot.catalogRevision,
+      readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+      latestStoreItems,
+    );
+    const reconciliation = reconcileBaristaCartWithCatalog(cart, latestCatalog);
 
-    const nextSeq = ticketSeq + 1;
-    const createdAt = pendingOrder.createdAt;
-    const recordedAt = Date.now();
-    setTicketSeq(nextSeq);
-
-    const orderId = `bt-${createdAt}-${recordedAt}`;
-    const code = `B-${nextSeq}`;
-
-    const ticket: BaristaTicket = {
-      id: orderId,
-      code,
-      createdAt,
-      mode: pendingOrder.mode,
-      destination: pendingOrder.destination,
-      lines: pendingOrder.lines,
-      total: pendingOrder.total,
-    };
-
-    const paymentRecord: BaristaPaymentRecord = {
-      id: `bp-${createdAt}-${recordedAt}`,
-      ticketId: orderId,
-      code,
-      createdAt,
-      mode: pendingOrder.mode,
-      destination: pendingOrder.destination,
-      total: pendingOrder.total,
-      status,
-      method,
-      lines: pendingOrder.lines,
-    };
-
-    const nextTickets = pendingOrder.isPastBooking ? tickets : [ticket, ...tickets];
-    const nextPayments = [paymentRecord, ...baristaPayments];
-    setTickets(nextTickets);
-    setBaristaPayments(nextPayments);
-    writePosState(getActiveBaristaStateKey(), nextTickets, nextSeq, nextPayments, storedMenuItems);
-
-    setCart([]);
-    setPendingOrder(null);
-    setShowSettlementPopup(false);
-    setShowPayNowPopup(false);
-
-    if (pendingOrder.isPastBooking) {
-      toast({ title: "Past Barista payment recorded", description: new Date(createdAt).toLocaleString() });
+    if (reconciliation.removedCount > 0) {
+      setCart(reconciliation.nextCart);
+      setCartCatalogNotice("Unavailable menu items were removed. Review the ticket before ordering.");
+      window.alert("One or more items were removed by the manager. The cart was updated; please review it before checkout.");
+      return;
+    }
+    if (reconciliation.changed) {
+      setCart(reconciliation.nextCart);
+      setCartCatalogNotice("Menu prices changed. Review the refreshed ticket before ordering.");
+      window.alert("A manager changed a menu item or price. The cart now shows the latest values; please review and place the order again.");
       return;
     }
 
-    const printResult = await printDepartmentReceipt({
-      department: "barista",
-      code,
-      destination: pendingOrder.destination,
-      mode: pendingOrder.mode,
-      method,
-      status,
-      total: pendingOrder.total,
-      createdAt,
-      lines: pendingOrder.lines,
+    const orderLines = createBaristaOrderLines(reconciliation.nextCart);
+    const liveTotal = orderLines.reduce((sum, line) => sum + (line.lineTotal ?? 0), 0);
+    const checkoutFingerprint = buildCheckoutFingerprint({
+      mode: serviceMode,
+      destination,
+      lines: orderLines,
+      total: liveTotal,
+      ...(bookingEntryMode === "past" ? { historicalCreatedAt: bookingTimestamp } : {}),
     });
+    const checkoutId = resolveCheckoutId(
+      STORAGE_CHECKOUT_ATTEMPT,
+      checkoutFingerprint,
+      () => createCheckoutId("barista"),
+      pendingOrder
+        ? { checkoutId: pendingOrder.checkoutId, fingerprint: pendingOrder.checkoutFingerprint }
+        : null,
+    );
+    setPendingOrder({
+      checkoutId,
+      checkoutFingerprint,
+      mode: serviceMode,
+      destination,
+      lines: orderLines,
+      total: liveTotal,
+      createdAt: bookingTimestamp,
+      isPastBooking: bookingEntryMode === "past",
+      paymentMethod: bookingEntryMode === "past" ? pastPaymentMethod : undefined,
+      catalogRevision: latestSnapshot.catalogRevision,
+    });
+    setCartCatalogNotice("");
+    setShowPayNowPopup(false);
+    setShowSettlementPopup(true);
+  };
 
-    if (!printResult.ok && printResult.reason) {
-      window.alert(`Barista receipt was not printed: ${printResult.reason}`);
+  const finalizeOrder = async (status: BaristaPaymentStatus, method: BaristaPaymentMethod) => {
+    if (isDirector || !pendingOrder || checkoutInFlightRef.current) return;
+    checkoutInFlightRef.current = true;
+    setCheckoutInFlight(true);
+    const orderToFinalize = pendingOrder;
+
+    try {
+      const activeBaristaKey = getActiveBaristaStateKey();
+      const hydration = await Promise.all([
+        hydrateStorageKeyFromFirebase(activeBaristaKey),
+        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      ]);
+      if (!hydration.every((result) => result.ok)) {
+        window.alert("The latest Barista menu and stock could not be refreshed. Nothing was recorded; reconnect and try again.");
+        return;
+      }
+      const latestSnapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+        activeBaristaKey,
+        STORAGE_TICKETS,
+        STORAGE_SEQ,
+        STORAGE_PAYMENTS,
+        STORAGE_MENU,
+        490,
+      );
+      const orderId = `bt-${orderToFinalize.checkoutId}`;
+      const paymentId = `bp-${orderToFinalize.checkoutId}`;
+      const existingPayment = latestSnapshot.payments.find((payment) => payment.id === paymentId);
+      if (existingPayment) {
+        if (
+          existingPayment.stockRequired !== false &&
+          existingPayment.ticketId &&
+          !latestSnapshot.tickets.some((ticket) => ticket.id === existingPayment.ticketId)
+        ) {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+          setCart([]);
+          setPendingOrder(null);
+          setShowSettlementPopup(false);
+          setShowPayNowPopup(false);
+          window.alert(`Sale ${existingPayment.code} belongs to a cancelled order. It was not recreated and no stock was consumed.`);
+          return;
+        }
+        const recoveredStockResult = orderToFinalize.isPastBooking
+          ? { ok: true as const }
+          : await withBaristaStockEffectLock(async () =>
+              confirmBaristaStockResult(updateBaristaStoreStock(
+                Array.isArray(existingPayment.lines) && existingPayment.lines.length > 0
+                  ? existingPayment.lines
+                  : orderToFinalize.lines,
+                "consume",
+                false,
+                orderToFinalize.checkoutId,
+              )));
+        if (recoveredStockResult.ok) {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+        }
+        setTickets(latestSnapshot.tickets);
+        setTicketSeq(latestSnapshot.ticketSeq);
+        setBaristaPayments(latestSnapshot.payments);
+        setStoredMenuItems(buildBaristaDisplayCatalog(
+          latestSnapshot.menuItems,
+          latestSnapshot.catalogRevision,
+          readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+          readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+        ));
+        setCart([]);
+        setPendingOrder(null);
+        setShowSettlementPopup(false);
+        setShowPayNowPopup(false);
+        window.alert(
+          recoveredStockResult.ok
+            ? `This sale was already recorded as ${existingPayment.code}; no duplicate was created and its stock deduction is confirmed.`
+            : `This sale was already recorded as ${existingPayment.code}; no duplicate was created, but stock still needs attention: ${recoveredStockResult.error}`,
+        );
+        return;
+      }
+      const latestStoreItems = (readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [])
+        .filter((item) => item.lane === "barista");
+      const latestCatalog = buildBaristaDisplayCatalog(
+        latestSnapshot.menuItems,
+        latestSnapshot.catalogRevision,
+        readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+        latestStoreItems,
+      );
+      const reconciliation = reconcileBaristaOrderLinesWithCatalog(orderToFinalize.lines, latestCatalog);
+
+      if (reconciliation.removedCount > 0 || reconciliation.changed) {
+        setCart(reconciliation.nextCart);
+        setPendingOrder(null);
+        setShowSettlementPopup(false);
+        setShowPayNowPopup(false);
+        setCartCatalogNotice("The manager changed the menu before payment. Review the refreshed ticket before ordering again.");
+        window.alert(
+          reconciliation.removedCount > 0
+            ? "A manager removed an item before payment. The cart was updated; please review it and place the order again."
+            : "A manager changed a menu item or price before payment. The cart now has the latest values; please review it and place the order again.",
+        );
+        return;
+      }
+
+      const liveLines = reconciliation.nextLines;
+      const liveTotal = liveLines.reduce((sum, line) => sum + (line.lineTotal ?? 0), 0);
+      let stockCandidate: ReturnType<typeof updateBaristaStoreStock> | null = null;
+      if (!orderToFinalize.isPastBooking) {
+        stockCandidate = updateBaristaStoreStock(
+          liveLines,
+          "consume",
+          false,
+          orderToFinalize.checkoutId,
+        );
+        if (!stockCandidate.ok) {
+          window.alert(stockCandidate.error);
+          return;
+        }
+      }
+
+      const expectedCatalogRevision = latestSnapshot.catalogRevision ?? 0;
+      const createdAt = orderToFinalize.createdAt;
+      const pendingCode = "B-PENDING";
+      const ticket: BaristaTicket = {
+        id: orderId,
+        code: pendingCode,
+        createdAt,
+        mode: orderToFinalize.mode,
+        destination: orderToFinalize.destination,
+        lines: liveLines,
+        total: liveTotal,
+      };
+      const paymentRecord: BaristaPaymentRecord = {
+        id: paymentId,
+        ticketId: orderId,
+        code: pendingCode,
+        createdAt,
+        mode: orderToFinalize.mode,
+        destination: orderToFinalize.destination,
+        total: liveTotal,
+        status,
+        method,
+        lines: liveLines,
+        stockRequired: !orderToFinalize.isPastBooking,
+      };
+      const nextTickets = orderToFinalize.isPastBooking ? latestSnapshot.tickets : [ticket, ...latestSnapshot.tickets];
+      const nextPayments = [paymentRecord, ...latestSnapshot.payments];
+      persistCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, {
+        checkoutId: orderToFinalize.checkoutId,
+        fingerprint: orderToFinalize.checkoutFingerprint,
+      });
+      const posCandidate = {
+          tickets: nextTickets,
+          ticketSeq: latestSnapshot.ticketSeq,
+          payments: nextPayments,
+          menuItems: latestSnapshot.menuItems,
+          catalogRevision: expectedCatalogRevision,
+          queueResetAt: latestSnapshot.queueResetAt ?? 0,
+          deletedPaymentKeys: latestSnapshot.deletedPaymentKeys ?? [],
+          deletedTicketIds: latestSnapshot.deletedTicketIds ?? [],
+        };
+      const ticketSequence = {
+          prefix: "B",
+          ...(orderToFinalize.isPastBooking ? {} : { ticketId: orderId }),
+          paymentId,
+        };
+      const commitResult = orderToFinalize.isPastBooking
+        ? await commitPosStateWithCatalogRevision(
+            activeBaristaKey,
+            expectedCatalogRevision,
+            posCandidate,
+            ticketSequence,
+          )
+        : stockCandidate?.ok && stockCandidate.storeItems && stockCandidate.inventoryItems
+          ? await commitBaristaCheckoutWithStock(
+              expectedCatalogRevision,
+              posCandidate,
+              ticketSequence,
+              stockCandidate.storeItems,
+              stockCandidate.inventoryItems,
+              stockCandidate.appliedEffects,
+            )
+          : { ok: false as const, reason: "sync-failed" as const };
+
+      if (!commitResult.ok) {
+        if (commitResult.reason === "checkout-deleted") {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+          setPendingOrder(null);
+          setCart([]);
+          setShowSettlementPopup(false);
+          setShowPayNowPopup(false);
+          window.alert("This checkout was deleted after it was first recorded. It was not recreated, no stock was changed, and no duplicate sale was made.");
+        } else if (commitResult.reason === "catalog-changed") {
+          clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+          const refreshedSnapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+            activeBaristaKey,
+            STORAGE_TICKETS,
+            STORAGE_SEQ,
+            STORAGE_PAYMENTS,
+            STORAGE_MENU,
+            490,
+          );
+          const refreshedStoreItems = (readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [])
+            .filter((item) => item.lane === "barista");
+          const refreshedCatalog = buildBaristaDisplayCatalog(
+            refreshedSnapshot.menuItems,
+            refreshedSnapshot.catalogRevision,
+            readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+            refreshedStoreItems,
+          );
+          const refreshedOrder = reconcileBaristaOrderLinesWithCatalog(orderToFinalize.lines, refreshedCatalog);
+          setStoredMenuItems(refreshedCatalog);
+          setCart(refreshedOrder.nextCart);
+          setPendingOrder(null);
+          setShowSettlementPopup(false);
+          setShowPayNowPopup(false);
+          setCartCatalogNotice("The manager changed the menu during payment. Review the refreshed ticket before ordering again.");
+          window.alert("The menu changed during payment, so the old-priced sale was not recorded. Review the refreshed ticket and try again.");
+        } else if (commitResult.reason === "stock-conflict") {
+          await Promise.all([
+            hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+            hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+          ]);
+          window.alert("Stock changed while this payment was being saved. No sale or ticket was recorded; review the refreshed quantities and try again.");
+        } else {
+          window.alert("The sale could not be safely synchronized. Nothing was recorded; please check the connection and try again.");
+        }
+        return;
+      }
+
+      const committedState = commitResult.value;
+      const committedCode =
+        committedState.payments.find((payment) => payment.id === paymentId)?.code ??
+        committedState.tickets.find((entry) => entry.id === orderId)?.code;
+      setTickets(committedState.tickets);
+      setTicketSeq(committedState.ticketSeq);
+      setBaristaPayments(committedState.payments);
+      setStoredMenuItems(buildBaristaDisplayCatalog(
+        committedState.menuItems,
+        committedState.catalogRevision,
+        readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+        readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+      ));
+
+      clearCheckoutAttempt(STORAGE_CHECKOUT_ATTEMPT, orderToFinalize.checkoutId);
+
+      setCart([]);
+      setCartCatalogNotice("");
+      setPendingOrder(null);
+      setShowSettlementPopup(false);
+      setShowPayNowPopup(false);
+
+      if (!committedCode || committedCode.endsWith("-PENDING")) {
+        window.alert("The sale was recorded, but its receipt number could not be confirmed. Check the Barista sales list before retrying.");
+        return;
+      }
+
+      if (orderToFinalize.isPastBooking) {
+        toast({ title: "Past Barista payment recorded", description: new Date(createdAt).toLocaleString() });
+        return;
+      }
+
+      const printResult = await printDepartmentReceipt({
+        department: "barista",
+        code: committedCode,
+        destination: orderToFinalize.destination,
+        mode: orderToFinalize.mode,
+        method,
+        status,
+        total: liveTotal,
+        createdAt,
+        lines: liveLines,
+      });
+
+      if (!printResult.ok && printResult.reason) {
+        window.alert(`Barista receipt was not printed: ${printResult.reason}`);
+      }
+    } finally {
+      checkoutInFlightRef.current = false;
+      setCheckoutInFlight(false);
     }
   };
 
@@ -1396,6 +2764,11 @@ export default function BaristaPage() {
     setDeliveringTicketId(id);
     try {
       const activeBaristaKey = getActiveBaristaStateKey();
+      const hydration = await hydrateStorageKeyFromFirebase(activeBaristaKey);
+      if (!hydration.ok) {
+        window.alert("The shared Barista queue could not be refreshed. Nothing was marked delivered.");
+        return;
+      }
       const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
         activeBaristaKey,
         STORAGE_TICKETS,
@@ -1404,19 +2777,35 @@ export default function BaristaPage() {
         STORAGE_MENU,
         490,
       );
-      const sourceTickets = snapshot.tickets.length > 0 ? snapshot.tickets : tickets;
-      const sourcePayments = snapshot.payments.length > 0 ? snapshot.payments : baristaPayments;
-      const sourceMenuItems = snapshot.menuItems.length > 0 ? snapshot.menuItems : storedMenuItems;
+      const currentTicket = snapshot.tickets.find((ticket) => ticket.id === id);
+      if (!currentTicket) {
+        window.alert("This Barista order was cancelled or completed on another terminal.");
+        return;
+      }
       const deliveredAt = Date.now();
-      const nextTickets = sourceTickets.map((ticket) =>
+      const nextTickets = snapshot.tickets.map((ticket) =>
         ticket.id === id ? { ...ticket, status: "delivered" as const, deliveredAt } : ticket,
       );
-
-      setTickets(nextTickets);
-      setTicketSeq(snapshot.ticketSeq);
-      setBaristaPayments(sourcePayments);
-      setStoredMenuItems(sourceMenuItems);
-      writePosState(activeBaristaKey, nextTickets, snapshot.ticketSeq, sourcePayments, sourceMenuItems);
+      const committedSnapshot = await commitSyncedStorageValueAndWait(activeBaristaKey, {
+        ...snapshot,
+        tickets: nextTickets,
+      });
+      const committedTicket = committedSnapshot.tickets.find((ticket) => ticket.id === id);
+      if (!committedTicket || committedTicket.status !== "delivered") {
+        window.alert("This Barista order was cancelled on another terminal before delivery committed.");
+        return;
+      }
+      setTickets(committedSnapshot.tickets);
+      setTicketSeq(committedSnapshot.ticketSeq);
+      setBaristaPayments(committedSnapshot.payments);
+      setStoredMenuItems(buildBaristaDisplayCatalog(
+        committedSnapshot.menuItems,
+        committedSnapshot.catalogRevision,
+        readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+        readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+      ));
+    } catch {
+      window.alert("The shared Barista queue did not confirm delivery. Reconnect and try again.");
     } finally {
       setDeliveringTicketId(null);
     }
@@ -1434,40 +2823,135 @@ export default function BaristaPage() {
     });
     if (!approved) return;
 
-    const stockResult = updateBaristaStoreStock(ticket.lines, "restore");
-    if (!stockResult.ok) {
-      window.alert(stockResult.error);
+    const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("Shared Barista orders and stock could not be refreshed. Nothing was cancelled; reconnect and try again.");
+      return;
+    }
+    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
+    );
+    const currentTicket = snapshot.tickets.find((entry) => entry.id === id);
+    if (!currentTicket || currentTicket.status === "delivered") {
+      window.alert("This Barista order was already completed or cancelled on another terminal.");
+      return;
+    }
+    const sourceStockApplicationId = id.startsWith("bt-") ? id.slice(3) : id;
+    const stockCandidate = updateBaristaStoreStock(
+      currentTicket.lines,
+      "restore",
+      false,
+      `compensate:${sourceStockApplicationId}`,
+      sourceStockApplicationId,
+    );
+    if (!stockCandidate.ok || !stockCandidate.storeItems || !stockCandidate.inventoryItems) {
+      window.alert(stockCandidate.ok ? "The cancellation stock compensation could not be prepared." : stockCandidate.error);
       return;
     }
 
     const cancelled: CancelledBaristaTicket = {
-      ...ticket,
+      ...currentTicket,
       source: "barista",
       cancelledAt: Date.now(),
     };
 
+    const deletedTicketIds = Array.from(new Set([...(snapshot.deletedTicketIds ?? []), id]));
+    const voidResult = await commitBaristaVoidWithStock(
+      snapshot,
+      [id],
+      snapshot.deletedPaymentKeys ?? [],
+      deletedTicketIds,
+      stockCandidate.storeItems,
+      stockCandidate.inventoryItems,
+      stockCandidate.appliedEffects,
+    );
+    if (!voidResult.ok) {
+      window.alert(voidResult.reason === "ticket-not-cancellable"
+        ? "This order was delivered or cancelled on another terminal before the cancellation committed. No stock was restored."
+        : voidResult.reason === "stock-conflict"
+          ? "Stock changed while this order was being cancelled. Nothing was cancelled or restored; refresh and try again."
+          : "The shared order cancellation could not be confirmed. Nothing was cancelled or restored; reconnect and try again.");
+      return;
+    }
+    const committedSnapshot = voidResult.value;
+    setTickets(committedSnapshot.tickets);
+    setBaristaPayments(committedSnapshot.payments);
+    setTicketSeq(committedSnapshot.ticketSeq);
+    setStoredMenuItems(buildBaristaDisplayCatalog(
+      committedSnapshot.menuItems,
+      committedSnapshot.catalogRevision,
+      readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+      readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+    ));
     const existing = readJson<CancelledBaristaTicket[]>(STORAGE_CANCELLED) ?? [];
     writeJson(STORAGE_CANCELLED, [cancelled, ...existing]);
-
-    const nextTickets = tickets.filter((ticket) => ticket.id !== id);
-    setTickets(nextTickets);
-    writePosState(getActiveBaristaStateKey(), nextTickets, ticketSeq, baristaPayments, storedMenuItems);
   };
 
-  const saveDrink = () => {
+  const saveDrink = async () => {
     const name = drinkName.trim();
     const price = parseFloat(drinkPrice);
     if (!name || isNaN(price) || price < 0) return;
     const prep = Math.max(0, parseInt(drinkPrepMinutes, 10) || 5);
 
     const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await Promise.all([
+      hydrateStorageKeyFromFirebase(activeBaristaKey),
+      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+    ]);
+    if (!hydration.every((result) => result.ok)) {
+      window.alert("The shared Barista menu could not be refreshed. No drink change was saved; reconnect and try again.");
+      return;
+    }
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
       activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
     );
+    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    const allStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    const latestStoreItems = allStoreItems.filter((item) => item.lane === "barista");
+    const sourceMenuItems = buildBaristaDisplayCatalog(
+      snapshot.menuItems,
+      snapshot.catalogRevision,
+      latestInventoryItems,
+      latestStoreItems,
+    );
     let next: BaristaMenuItem[];
+    let nextInventoryItems = latestInventoryItems;
+    let nextStoreItems = allStoreItems;
     if (drinkEditId) {
-      next = snapshot.menuItems.map((item) =>
+      const currentItem = sourceMenuItems.find((item) => item.id === drinkEditId);
+      if (!currentItem) {
+        window.alert("This Barista item was removed by another manager. The latest menu was loaded; nothing was changed.");
+        setDrinkEditId(null);
+        return;
+      }
+      next = sourceMenuItems.map((item) =>
         item.id === drinkEditId ? { ...item, name, price, category: drinkCategory, prepMinutes: prep } : item,
+      );
+      const targetKey = normalizeBaristaTarget(currentItem.name);
+      const linkedInventoryItem = latestInventoryItems.find((item) =>
+        item.id === currentItem.inventoryItemId || item.id === currentItem.id,
+      ) ?? latestInventoryItems.find((item) =>
+        item.category === "Bar" && normalizeBaristaTarget(getBaristaInventoryLabel(item)) === targetKey,
+      );
+      const linkedStoreItem = allStoreItems.find((item) =>
+        item.lane === "barista" &&
+        (item.id === currentItem.storeItemId || normalizeBaristaTarget(getStoreItemLabel(item)) === targetKey),
+      );
+      nextInventoryItems = latestInventoryItems.map((item) =>
+        linkedInventoryItem && item.id === linkedInventoryItem.id
+          ? { ...item, sellingPrice: price, price }
+          : item,
+      );
+      nextStoreItems = allStoreItems.map((item) =>
+        linkedStoreItem && item.id === linkedStoreItem.id
+          ? { ...item, sellingPrice: price }
+          : item,
       );
     } else {
       const newDrink: BaristaMenuItem = {
@@ -1477,10 +2961,30 @@ export default function BaristaPage() {
         category: drinkCategory,
         prepMinutes: prep,
       };
-      next = [...snapshot.menuItems, newDrink];
+      next = [...sourceMenuItems, newDrink];
     }
-    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
-    setStoredMenuItems(next);
+    const catalogCommit = await commitBaristaCatalogAndStockMutation(
+      snapshot,
+      next,
+      allStoreItems,
+      nextStoreItems,
+      latestInventoryItems,
+      nextInventoryItems,
+    );
+    if (!catalogCommit.ok) {
+      window.alert(catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
+        ? "Another manager or sale changed the Barista menu or stock first. Nothing was overwritten; review the latest values and try again."
+        : "The Barista menu change could not be confirmed in shared storage. Nothing was saved; reconnect and try again.");
+      return;
+    }
+    setStoredMenuItems(buildBaristaDisplayCatalog(
+      catalogCommit.value.menuItems,
+      catalogCommit.value.catalogRevision,
+      catalogCommit.inventoryItems,
+      catalogCommit.storeItems,
+    ));
+    setInventoryItems(catalogCommit.inventoryItems);
+    setBaristaStoreItems(catalogCommit.storeItems.filter((item) => item.lane === "barista"));
     setDrinkEditId(null);
     setDrinkName("");
     setDrinkPrice("");
@@ -1504,12 +3008,32 @@ export default function BaristaPage() {
     });
     if (!approved) return;
     const activeBaristaKey = getActiveBaristaStateKey();
+    const hydration = await hydrateStorageKeyFromFirebase(activeBaristaKey);
+    if (!hydration.ok) {
+      window.alert("The shared Barista menu could not be refreshed. No drink was deleted; reconnect and try again.");
+      return;
+    }
     const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
       activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
     );
-    const next = snapshot.menuItems.filter((item) => item.id !== id);
-    writePosState(activeBaristaKey, snapshot.tickets, snapshot.ticketSeq, snapshot.payments, next);
-    setStoredMenuItems(next);
+    const sourceMenuItems =
+      (snapshot.catalogRevision ?? 0) === 0 && snapshot.menuItems.length === 0
+        ? storedMenuItems
+        : snapshot.menuItems;
+    const next = sourceMenuItems.filter((item) => item.id !== id);
+    const catalogCommit = await commitPosCatalogMutation(activeBaristaKey, snapshot, next);
+    if (!catalogCommit.ok) {
+      window.alert(catalogCommit.reason === "catalog-changed"
+        ? "Another manager changed the Barista menu first. The latest menu was loaded; review it and try deleting again."
+        : "The Barista menu deletion could not be confirmed in shared storage. Nothing was deleted; reconnect and try again.");
+      return;
+    }
+    setStoredMenuItems(buildBaristaDisplayCatalog(
+      catalogCommit.value.menuItems,
+      catalogCommit.value.catalogRevision,
+      readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [],
+      readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [],
+    ));
     if (drinkEditId === id) {
       setDrinkEditId(null);
       setDrinkName("");
@@ -1717,8 +3241,16 @@ export default function BaristaPage() {
                                 const value = parseInt(event.target.value, 10);
                                 if (!Number.isFinite(value) || value < 0) return;
                                 if (value === item.stock) return;
-                                updateBaristaItemStock(
-                                  { name: item.name, category: item.category, buyingPrice: item.buyingPrice, sellingPrice: item.sellingPrice },
+                                void updateBaristaItemStock(
+                                  {
+                                    menuItemId: item.menuItemId,
+                                    inventoryItemId: item.inventoryItemId,
+                                    storeItemId: item.storeItemId,
+                                    name: item.name,
+                                    category: item.category,
+                                    buyingPrice: item.buyingPrice,
+                                    sellingPrice: item.sellingPrice,
+                                  },
                                   value,
                                 );
                               }}
@@ -1742,7 +3274,7 @@ export default function BaristaPage() {
                                 const value = parseFloat(event.target.value);
                                 if (!Number.isFinite(value) || value < 0) return;
                                 if (value === item.buyingPrice) return;
-                                updateBaristaItemPricing(item.name, { buyingPrice: value });
+                                updateBaristaItemPricing(item.id, item.name, { buyingPrice: value });
                               }}
                             />
                           </div>
@@ -1760,7 +3292,7 @@ export default function BaristaPage() {
                                 const value = parseFloat(event.target.value);
                                 if (!Number.isFinite(value) || value < 0) return;
                                 if (value === item.sellingPrice) return;
-                                updateBaristaItemPricing(item.name, { price: value });
+                                updateBaristaItemPricing(item.id, item.name, { price: value });
                               }}
                             />
                           </div>
@@ -2153,7 +3685,7 @@ export default function BaristaPage() {
             <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredMenu.map((item) => {
-                  const stockStatus = getMenuStockStatus(baristaStoreItems, item.name);
+                  const stockStatus = getMenuStockStatus(baristaStoreItems, item.name, item.storeItemId);
                   return (
                   <div
                     key={item.id}
@@ -2419,6 +3951,12 @@ export default function BaristaPage() {
               </div>
             )}
 
+            {cartCatalogNotice && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">
+                {cartCatalogNotice}
+              </div>
+            )}
+
             {cart.length === 0 ? (
               <div className="h-44 rounded-xl border border-dashed flex flex-col items-center justify-center text-center opacity-40">
                 <Receipt className="w-10 h-10 mb-2" />
@@ -2527,6 +4065,7 @@ export default function BaristaPage() {
             <CardContent className="space-y-3">
               {pendingOrder?.isPastBooking ? (
                 <Button
+                  disabled={checkoutInFlight}
                   onClick={() => finalizeOrder(pendingOrder.paymentMethod === "credit" ? "credit" : "completed", pendingOrder.paymentMethod ?? "cash")}
                   className="w-full h-11 font-black uppercase text-[10px] tracking-widest"
                 >
@@ -2535,6 +4074,7 @@ export default function BaristaPage() {
               ) : (
               <>
                 <Button
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowSettlementPopup(false);
                   setShowPayNowPopup(true);
@@ -2544,6 +4084,7 @@ export default function BaristaPage() {
                 Paid Now
               </Button>
               <Button
+                disabled={checkoutInFlight}
                 onClick={() => finalizeOrder("credit", "credit")}
                 className="w-full h-11 font-black uppercase text-[10px] tracking-widest bg-red-600 hover:bg-red-600/90 text-white"
               >
@@ -2553,6 +4094,7 @@ export default function BaristaPage() {
               )}
               <Button
                 variant="outline"
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowSettlementPopup(false);
                   setShowPayNowPopup(false);
@@ -2574,17 +4116,18 @@ export default function BaristaPage() {
               <CardDescription>Select cash, card, or mobile</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button onClick={() => finalizeOrder("completed", "cash")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "cash")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Cash
               </Button>
-              <Button onClick={() => finalizeOrder("completed", "card")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "card")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Card
               </Button>
-              <Button onClick={() => finalizeOrder("completed", "mobile")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
+              <Button disabled={checkoutInFlight} onClick={() => finalizeOrder("completed", "mobile")} className="w-full h-11 font-black uppercase text-[10px] tracking-widest">
                 Mobile
               </Button>
               <Button
                 variant="outline"
+                disabled={checkoutInFlight}
                 onClick={() => {
                   setShowPayNowPopup(false);
                   setShowSettlementPopup(true);

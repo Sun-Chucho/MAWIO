@@ -209,7 +209,12 @@ export function mergeKitchenMenuItems(
   menuItems: KitchenMenuItem[],
   options?: { includeDefaultMenu?: boolean; stripDefaultMenu?: boolean },
 ): KitchenMenuItem[] {
-  const includeDefaultMenu = options?.includeDefaultMenu ?? !options?.stripDefaultMenu;
+  // Adding a missing built-in is a catalog mutation, not ordinary
+  // normalization. Callers may opt into it only after confirming that the
+  // canonical catalog is still the first/legacy revision. Keeping the default
+  // false also prevents sync sanitization from recreating a manager-deleted
+  // built-in item in an already-published catalog.
+  const includeDefaultMenu = options?.includeDefaultMenu ?? false;
   const stripDefaultMenu = options?.stripDefaultMenu ?? false;
 
   const merged = new Map<string, KitchenMenuItem>();
@@ -220,12 +225,17 @@ export function mergeKitchenMenuItems(
 
     const approvedItem = getApprovedKitchenMenuItem(item);
     if (stripDefaultMenu && approvedItem) continue;
-    merged.set(approvedItem?.id ?? item.id, approvedItem ?? item);
+    // Canonicalize legacy aliases to the shipped ID, but keep persisted
+    // fields authoritative. Replacing the whole item with `approvedItem` here
+    // silently undid every manager name/price edit on a built-in dish.
+    merged.set(approvedItem?.id ?? item.id, approvedItem ? { ...item, id: approvedItem.id } : item);
   }
 
   if (includeDefaultMenu) {
     for (const item of DEFAULT_KITCHEN_MENU) {
-      merged.set(item.id, item);
+      // Defaults seed only missing dishes. A valid stored item (including a
+      // manager-edited built-in dish) must always win.
+      if (!merged.has(item.id)) merged.set(item.id, item);
     }
   }
 

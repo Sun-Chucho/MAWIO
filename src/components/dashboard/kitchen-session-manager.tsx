@@ -21,7 +21,8 @@ import {
   STORAGE_BARISTA_PURCHASE_SESSION,
 } from "@/app/lib/kitchen-session-storage";
 import { readJson, STORAGE_BARISTA_STATE, writeJson } from "@/app/lib/storage";
-import { subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitBaristaCatalogAndStockMutation, commitStockArraysAtomically, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { buildInitialBaristaMenuItems } from "@/app/lib/barista-stock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,12 +45,17 @@ type BaristaMenuItem = {
   prepMinutes: number;
   barcode?: string;
   buyingPrice?: number;
+  inventoryItemId?: string;
+  storeItemId?: string;
 };
 type BaristaPosSnapshot = {
   tickets?: unknown[];
   ticketSeq?: number;
   payments?: unknown[];
   menuItems?: BaristaMenuItem[];
+  catalogRevision?: number;
+  queueResetAt?: number;
+  deletedPaymentKeys?: string[];
 };
 type HistoryPreviewState =
   | { kind: "purchase"; entry: KitchenPurchaseHistoryEntry }
@@ -116,6 +122,11 @@ function createPurchaseLine(item?: MainStoreItem, menuItem?: BaristaMenuItem): K
 }
 
 function findStoreItemForBaristaMenu(storeItems: MainStoreItem[], menuItem: BaristaMenuItem) {
+  const linkedStoreItem = menuItem.storeItemId
+    ? storeItems.find((item) => item.id === menuItem.storeItemId)
+    : undefined;
+  if (linkedStoreItem) return linkedStoreItem;
+
   const menuName = normalizeStockName(menuItem.name);
   return storeItems.find((item) => normalizeStockName(getStoreItemLabel(item)) === menuName)
     ?? storeItems.find((item) => normalizeStockName(item.name) === menuName);
@@ -281,7 +292,6 @@ export function KitchenSessionManager({
 }) {
   const [activeTab, setActiveTab] = useState<KitchenWorkflowTab>("purchase");
   const [storeItems, setStoreItems] = useState<MainStoreItem[]>([]);
-  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [baristaMenuItems, setBaristaMenuItems] = useState<BaristaMenuItem[]>([]);
   const [purchaseSession, setPurchaseSession] = useState<KitchenPurchaseSession | null>(null);
   const [dailySession, setDailySession] = useState<KitchenDailyStockSession | null>(null);
@@ -293,6 +303,7 @@ export function KitchenSessionManager({
   const [closeDate, setCloseDate] = useState(new Date().toISOString().slice(0, 10));
   const [closeTime, setCloseTime] = useState(new Date().toTimeString().slice(0, 5));
   const [purchaseSearch, setPurchaseSearch] = useState("");
+  const [isClosingSession, setIsClosingSession] = useState(false);
   const purchaseCopy = getWorkflowCopy("purchase", department);
   const dailyCopy = getWorkflowCopy("daily-stock", department);
   const departmentLabel = department === "kitchen" ? "Kitchen" : "Barista";
@@ -312,11 +323,24 @@ export function KitchenSessionManager({
   const dailyHistoryKey =
     department === "kitchen" ? STORAGE_KITCHEN_DAILY_STOCK_HISTORY : STORAGE_BARISTA_DAILY_STOCK_HISTORY;
 
+  const hydrateSharedWriteState = async (keys: string[], description: string) => {
+    const results = await Promise.all(
+      keys.map((key) => hydrateStorageKeyFromFirebase(key).catch(() => ({ ok: false as const, remoteExists: false as const }))),
+    );
+    if (results.every((result) => result.ok)) return true;
+
+    toast({
+      title: "Shared data could not be refreshed",
+      description: `${description} was not saved. Check the connection and try again.`,
+      variant: "destructive",
+    });
+    return false;
+  };
+
   useEffect(() => {
     const applySnapshot = () => {
       const allStore = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
       setStoreItems(allStore.filter((item) => item.lane === department));
-      setInventoryItems(readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? []);
       const baristaSnapshot = readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE);
       setBaristaMenuItems(Array.isArray(baristaSnapshot?.menuItems) ? baristaSnapshot.menuItems : []);
       setPurchaseSession(readJson<KitchenPurchaseSession>(purchaseSessionKey));
@@ -529,14 +553,36 @@ export function KitchenSessionManager({
     setCloseTarget(target);
   };
 
-  const applyStoreAndInventoryChanges = (nextKitchenStore: MainStoreItem[], nextInventory: InventoryItem[]) => {
-    const allStore = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+  const applyStoreAndInventoryChanges = async (
+    allStore: MainStoreItem[],
+    nextKitchenStore: MainStoreItem[],
+    expectedInventory: InventoryItem[],
+    nextInventory: InventoryItem[],
+    mutationId: string,
+  ) => {
     const otherDepartmentStore = allStore.filter((item) => item.lane !== department);
-    writeJson(STORAGE_MAIN_STORE_ITEMS, [...otherDepartmentStore, ...nextKitchenStore]);
-    writeJson(STORAGE_INVENTORY_ITEMS, nextInventory);
+    try {
+      const committed = await commitStockArraysAtomically(
+        allStore,
+        [...otherDepartmentStore, ...nextKitchenStore],
+        expectedInventory,
+        nextInventory,
+        mutationId,
+      );
+      if (!committed.ok) throw new Error(committed.reason);
+      setStoreItems(committed.storeItems.filter((item) => item.lane === department));
+      return true;
+    } catch {
+      toast({
+        title: "Shared stock was not confirmed",
+        description: `The ${departmentLabel.toLowerCase()} shift remains open. Reconnect, refresh the balances, and close it again.`,
+        variant: "destructive",
+      });
+      return false;
+    }
   };
 
-  const closePurchaseSession = () => {
+  const closePurchaseSession = async () => {
     if (!purchaseSession) return;
     const closedAt = combineDateAndTime(closeDate, closeTime);
 
@@ -546,137 +592,243 @@ export function KitchenSessionManager({
       return;
     }
 
-    let nextKitchenStore = [...storeItems];
-    let nextInventory = [...inventoryItems];
+    const hydrated = await hydrateSharedWriteState(
+      [
+        STORAGE_MAIN_STORE_ITEMS,
+        STORAGE_INVENTORY_ITEMS,
+        purchaseHistoryKey,
+        ...(isBaristaDepartment ? [STORAGE_BARISTA_STATE] : []),
+      ],
+      `The ${departmentLabel.toLowerCase()} purchase shift`,
+    );
+    if (!hydrated) return;
+
+    const latestAllStore = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    let nextKitchenStore = latestAllStore.filter((item) => item.lane === department);
+    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    let nextInventory = [...latestInventoryItems];
+    const latestPurchaseHistory = readJson<KitchenPurchaseHistoryEntry[]>(purchaseHistoryKey) ?? [];
+    const baristaSnapshot = isBaristaDepartment
+      ? (readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE) ?? {})
+      : null;
+    const publishedBaristaMenu = Array.isArray(baristaSnapshot?.menuItems) ? baristaSnapshot.menuItems : [];
+    const baristaCatalogRevision = Number.isFinite(baristaSnapshot?.catalogRevision)
+      ? Number(baristaSnapshot?.catalogRevision)
+      : 0;
+    const currentBaristaMenu = isBaristaDepartment && publishedBaristaMenu.length === 0 && baristaCatalogRevision === 0
+      ? buildInitialBaristaMenuItems(latestInventoryItems)
+      : publishedBaristaMenu;
+    const baristaLineLinks = new Map<string, {
+      storeItemId?: string;
+      inventoryItemId?: string;
+      menuItem?: BaristaMenuItem;
+      itemName: string;
+      sellingPrice: number;
+    }>();
 
     validLines.forEach((line) => {
-      const totalBalance = roundStock(line.previousBalance + line.addedQty);
       const existingStore = line.itemId ? nextKitchenStore.find((item) => item.id === line.itemId) : null;
+      const inventoryBeforeUpdate = existingStore ? getInventoryMatch(nextInventory, existingStore) : undefined;
+      const linkedMenuItem = isBaristaDepartment
+        ? currentBaristaMenu.find((item) => item.storeItemId === existingStore?.id)
+          ?? currentBaristaMenu.find((item) => !!inventoryBeforeUpdate && item.inventoryItemId === inventoryBeforeUpdate.id)
+          ?? currentBaristaMenu.find((item) => normalizeStockName(item.name) === normalizeStockName(line.itemName))
+        : undefined;
+      // Menu Create / manager inventory is the canonical owner of an existing
+      // POS row. A purchase sheet may replenish it and attach stable links,
+      // but must never replay an older sheet name or selling price.
+      const preservePublishedCatalog = !!linkedMenuItem;
+      const effectiveName = preservePublishedCatalog ? linkedMenuItem.name : line.itemName.trim();
+      const effectiveSellingPrice = preservePublishedCatalog ? linkedMenuItem.price : line.sellingPrice;
+      const totalBalance = roundStock((existingStore?.stock ?? line.previousBalance) + line.addedQty);
+      let updatedStore: MainStoreItem;
+      let updatedInventory: InventoryItem | undefined;
 
       if (existingStore) {
         nextKitchenStore = nextKitchenStore.map((item) =>
           item.id === existingStore.id
             ? {
                 ...item,
-                name: line.itemName.trim(),
+                name: effectiveName,
                 subCategory: line.category.trim(),
                 unit: line.unit.trim() || item.unit,
                 stock: totalBalance,
                 buyingPrice: line.pricePerUnit > 0 ? line.pricePerUnit : item.buyingPrice,
-                sellingPrice: line.sellingPrice,
+                sellingPrice: effectiveSellingPrice,
                 receivedStock: roundStock((item.receivedStock ?? 0) + line.addedQty),
               }
             : item,
         );
 
-        const refreshedStore = nextKitchenStore.find((item) => item.id === existingStore.id)!;
-        const inventoryMatch = getInventoryMatch(nextInventory, refreshedStore);
+        updatedStore = nextKitchenStore.find((item) => item.id === existingStore.id)!;
+        const inventoryMatch = inventoryBeforeUpdate ?? getInventoryMatch(nextInventory, updatedStore);
 
         if (inventoryMatch) {
           nextInventory = nextInventory.map((item) =>
             item.id === inventoryMatch.id
               ? {
                   ...item,
-                  name: refreshedStore.name,
-                  subCategory: refreshedStore.subCategory ?? "",
-                  unit: refreshedStore.unit,
+                  name: updatedStore.name,
+                  subCategory: updatedStore.subCategory ?? "",
+                  unit: updatedStore.unit,
                   stock: totalBalance,
-                  buyingPrice: refreshedStore.buyingPrice ?? item.buyingPrice,
-                  sellingPrice: line.sellingPrice,
-                  price: line.sellingPrice,
+                  buyingPrice: updatedStore.buyingPrice ?? item.buyingPrice,
+                  sellingPrice: effectiveSellingPrice,
+                  price: effectiveSellingPrice,
                   receivedStock: roundStock((item.receivedStock ?? 0) + line.addedQty),
                 }
               : item,
           );
+          updatedInventory = nextInventory.find((item) => item.id === inventoryMatch.id);
         } else {
-          nextInventory = [
-            {
-              id: `inv-kitchen-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-              barcode: "",
-              name: refreshedStore.name,
-              category: departmentCategory,
-              subCategory: refreshedStore.subCategory ?? "",
-              size: refreshedStore.size ?? "",
-              stock: totalBalance,
-              totSold: 0,
-              buyingPrice: refreshedStore.buyingPrice ?? line.pricePerUnit,
-              sellingPrice: line.sellingPrice,
-              price: line.sellingPrice,
-              status: "ACTIVE",
-              minStock: refreshedStore.minStock,
-              unit: refreshedStore.unit,
-              damages: 0,
-              receivedStock: line.addedQty,
-            },
-            ...nextInventory,
-          ];
-        }
-      } else {
-        const newStore: MainStoreItem = {
-            id: `kitchen-store-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            name: line.itemName.trim(),
-            subCategory: line.category.trim(),
-            stock: totalBalance,
-            unit: line.unit.trim() || "kg",
-            minStock: 1,
-            lane: department,
-            buyingPrice: line.pricePerUnit,
-            sellingPrice: line.sellingPrice,
-            receivedStock: line.addedQty,
-            damages: 0,
-        };
-
-        nextKitchenStore = [newStore, ...nextKitchenStore];
-        nextInventory = [
-          {
+          updatedInventory = {
             id: `inv-kitchen-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             barcode: "",
-            name: newStore.name,
+            name: updatedStore.name,
             category: departmentCategory,
-            subCategory: newStore.subCategory ?? "",
-            size: "",
+            subCategory: updatedStore.subCategory ?? "",
+            size: updatedStore.size ?? "",
             stock: totalBalance,
             totSold: 0,
-            buyingPrice: line.pricePerUnit,
-            sellingPrice: line.sellingPrice,
-            price: line.sellingPrice,
+            buyingPrice: updatedStore.buyingPrice ?? line.pricePerUnit,
+            sellingPrice: effectiveSellingPrice,
+            price: effectiveSellingPrice,
             status: "ACTIVE",
-            minStock: 1,
-            unit: newStore.unit,
+            minStock: updatedStore.minStock,
+            unit: updatedStore.unit,
             damages: 0,
             receivedStock: line.addedQty,
-          },
-          ...nextInventory,
-        ];
+          };
+          nextInventory = [updatedInventory, ...nextInventory];
+        }
+      } else {
+        updatedStore = {
+          id: `kitchen-store-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: effectiveName,
+          subCategory: line.category.trim(),
+          stock: totalBalance,
+          unit: line.unit.trim() || "kg",
+          minStock: 1,
+          lane: department,
+          buyingPrice: line.pricePerUnit,
+          sellingPrice: effectiveSellingPrice,
+          receivedStock: line.addedQty,
+          damages: 0,
+        };
+        updatedInventory = {
+          id: `inv-kitchen-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          barcode: "",
+          name: updatedStore.name,
+          category: departmentCategory,
+          subCategory: updatedStore.subCategory ?? "",
+          size: "",
+          stock: totalBalance,
+          totSold: 0,
+          buyingPrice: line.pricePerUnit,
+          sellingPrice: effectiveSellingPrice,
+          price: effectiveSellingPrice,
+          status: "ACTIVE",
+          minStock: 1,
+          unit: updatedStore.unit,
+          damages: 0,
+          receivedStock: line.addedQty,
+        };
+        nextKitchenStore = [updatedStore, ...nextKitchenStore];
+        nextInventory = [updatedInventory, ...nextInventory];
+      }
+
+      if (isBaristaDepartment) {
+        baristaLineLinks.set(line.id, {
+          storeItemId: updatedStore.id,
+          ...(updatedInventory ? { inventoryItemId: updatedInventory.id } : {}),
+          ...(linkedMenuItem ? { menuItem: linkedMenuItem } : {}),
+          itemName: effectiveName,
+          sellingPrice: effectiveSellingPrice,
+        });
       }
     });
 
-    applyStoreAndInventoryChanges(nextKitchenStore, nextInventory);
-
     if (isBaristaDepartment) {
-      const snapshot = readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE) ?? {};
-      let nextMenu = Array.isArray(snapshot.menuItems) ? [...snapshot.menuItems] : [];
+      const snapshot = baristaSnapshot ?? {};
+      let nextMenu = [...currentBaristaMenu];
       validLines.forEach((line) => {
-        const normalizedName = normalizeStockName(line.itemName);
-        const match = nextMenu.find((item) => normalizeStockName(item.name) === normalizedName);
+        const link = baristaLineLinks.get(line.id);
+        const normalizedName = normalizeStockName(link?.itemName ?? line.itemName);
+        const match = nextMenu.find((item) => item.id === link?.menuItem?.id)
+          ?? nextMenu.find((item) => !!link?.storeItemId && item.storeItemId === link.storeItemId)
+          ?? nextMenu.find((item) => !!link?.inventoryItemId && item.inventoryItemId === link.inventoryItemId)
+          ?? nextMenu.find((item) => normalizeStockName(item.name) === normalizedName);
         if (match) {
-          nextMenu = nextMenu.map((item) => item.id === match.id
-            ? { ...item, name: line.itemName.trim(), price: line.sellingPrice, buyingPrice: line.pricePerUnit }
-            : item);
+          const updatedMenuItem = {
+            ...match,
+            buyingPrice: line.pricePerUnit,
+            ...(link?.storeItemId ? { storeItemId: link.storeItemId } : {}),
+            ...(link?.inventoryItemId ? { inventoryItemId: link.inventoryItemId } : {}),
+          };
+          if (JSON.stringify(updatedMenuItem) !== JSON.stringify(match)) {
+            nextMenu = nextMenu.map((item) => item.id === match.id ? updatedMenuItem : item);
+          }
         } else {
+          // An existing stock row with no current POS match may have been
+          // deliberately removed by a manager. Only a brand-new purchase row
+          // is allowed to create a new menu entry.
+          if (line.itemId) return;
           const allowedCategories = new Set(["espresso", "coffee", "tea", "cold", "snacks"]);
           nextMenu.push({
             id: `barista-menu-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            name: line.itemName.trim(),
-            price: line.sellingPrice,
+            name: link?.itemName ?? line.itemName.trim(),
+            price: link?.sellingPrice ?? line.sellingPrice,
             buyingPrice: line.pricePerUnit,
             category: allowedCategories.has(line.category.trim().toLowerCase()) ? line.category.trim().toLowerCase() : "coffee",
             prepMinutes: 5,
+            ...(link?.storeItemId ? { storeItemId: link.storeItemId } : {}),
+            ...(link?.inventoryItemId ? { inventoryItemId: link.inventoryItemId } : {}),
           });
         }
       });
-      writeJson(STORAGE_BARISTA_STATE, { ...snapshot, menuItems: nextMenu });
+      const baseSnapshot = {
+        tickets: Array.isArray(snapshot.tickets) ? snapshot.tickets : [],
+        ticketSeq: Number.isFinite(snapshot.ticketSeq) ? Number(snapshot.ticketSeq) : 490,
+        payments: Array.isArray(snapshot.payments) ? snapshot.payments : [],
+        menuItems: publishedBaristaMenu,
+        catalogRevision: baristaCatalogRevision,
+        queueResetAt: Number.isFinite(snapshot.queueResetAt) ? Number(snapshot.queueResetAt) : 0,
+        deletedPaymentKeys: Array.isArray(snapshot.deletedPaymentKeys) ? snapshot.deletedPaymentKeys : [],
+      };
+      const nextAllStore = [
+        ...latestAllStore.filter((item) => item.lane !== department),
+        ...nextKitchenStore,
+      ];
+      const catalogCommit = await commitBaristaCatalogAndStockMutation(
+        baseSnapshot,
+        nextMenu,
+        latestAllStore,
+        nextAllStore,
+        latestInventoryItems,
+        nextInventory,
+        `session-close:${department}:purchase:${purchaseSession.id}`,
+      );
+      if (!catalogCommit.ok) {
+        toast({
+          title: catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
+            ? "Barista menu or stock changed"
+            : "Barista purchase was not confirmed",
+          description: "Another shared change won first or the connection failed. Nothing was partially published; refresh balances and close the shift again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setBaristaMenuItems(catalogCommit.value.menuItems as BaristaMenuItem[]);
+      setStoreItems(catalogCommit.storeItems.filter((item) => item.lane === department));
     }
+
+    if (!isBaristaDepartment && !await applyStoreAndInventoryChanges(
+      latestAllStore,
+      nextKitchenStore,
+      latestInventoryItems,
+      nextInventory,
+      `session-close:${department}:purchase:${purchaseSession.id}`,
+    )) return;
 
     writeJson(purchaseHistoryKey, [
       {
@@ -685,14 +837,14 @@ export function KitchenSessionManager({
         closedAt,
         signoff: closeNotes,
       },
-      ...purchaseHistory,
+      ...latestPurchaseHistory,
     ]);
     persistPurchaseSession(null);
     setCloseTarget(null);
     toast({ title: purchaseCopy.success });
   };
 
-  const closeDailySession = () => {
+  const closeDailySession = async () => {
     if (!dailySession) return;
     const closedAt = combineDateAndTime(closeDate, closeTime);
 
@@ -702,12 +854,21 @@ export function KitchenSessionManager({
       return;
     }
 
-    let nextKitchenStore = [...storeItems];
-    let nextInventory = [...inventoryItems];
+    const hydrated = await hydrateSharedWriteState(
+      [STORAGE_MAIN_STORE_ITEMS, STORAGE_INVENTORY_ITEMS, dailyHistoryKey],
+      `The ${departmentLabel.toLowerCase()} daily stock shift`,
+    );
+    if (!hydrated) return;
+
+    const latestAllStore = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+    let nextKitchenStore = latestAllStore.filter((item) => item.lane === department);
+    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+    let nextInventory = [...latestInventoryItems];
+    const latestDailyHistory = readJson<KitchenDailyStockHistoryEntry[]>(dailyHistoryKey) ?? [];
 
     validLines.forEach((line) => {
-      const closingStock = roundStock(line.openingStock + line.received - line.used - line.wastage);
       const existingStore = line.itemId ? nextKitchenStore.find((item) => item.id === line.itemId) : null;
+      const closingStock = roundStock((existingStore?.stock ?? line.openingStock) + line.received - line.used - line.wastage);
 
       if (existingStore) {
         nextKitchenStore = nextKitchenStore.map((item) =>
@@ -803,7 +964,13 @@ export function KitchenSessionManager({
       }
     });
 
-    applyStoreAndInventoryChanges(nextKitchenStore, nextInventory);
+    if (!await applyStoreAndInventoryChanges(
+      latestAllStore,
+      nextKitchenStore,
+      latestInventoryItems,
+      nextInventory,
+      `session-close:${department}:daily:${dailySession.id}`,
+    )) return;
 
     writeJson(dailyHistoryKey, [
       {
@@ -812,14 +979,14 @@ export function KitchenSessionManager({
         closedAt,
         signoff: closeNotes,
       },
-      ...dailyHistory,
+      ...latestDailyHistory,
     ]);
     persistDailySession(null);
     setCloseTarget(null);
     toast({ title: dailyCopy.success });
   };
 
-  const submitCloseDialog = () => {
+  const submitCloseDialog = async () => {
     if (
       !closeNotes.preparedBy.trim() ||
       !closeNotes.checkedBy.trim() ||
@@ -830,13 +997,19 @@ export function KitchenSessionManager({
       return;
     }
 
-    if (closeTarget === "purchase") {
-      closePurchaseSession();
-      return;
-    }
+    if (isClosingSession) return;
+    setIsClosingSession(true);
+    try {
+      if (closeTarget === "purchase") {
+        await closePurchaseSession();
+        return;
+      }
 
-    if (closeTarget === "daily-stock") {
-      closeDailySession();
+      if (closeTarget === "daily-stock") {
+        await closeDailySession();
+      }
+    } finally {
+      setIsClosingSession(false);
     }
   };
 
@@ -1437,7 +1610,7 @@ export function KitchenSessionManager({
         </div>
       )}
 
-      <Dialog open={closeTarget !== null} onOpenChange={(open) => !open && setCloseTarget(null)}>
+      <Dialog open={closeTarget !== null} onOpenChange={(open) => !open && !isClosingSession && setCloseTarget(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="font-black uppercase tracking-tight">
@@ -1457,8 +1630,10 @@ export function KitchenSessionManager({
           </div>
           <Textarea value={`Prepared by: ${closeNotes.preparedBy}\nChecked by: ${closeNotes.checkedBy}\nApproved by: ${closeNotes.approvedBy}\nCashier: ${closeNotes.cashier}\nClose date: ${closeDate}\nClose time: ${closeTime}`} readOnly className="min-h-[130px]" />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCloseTarget(null)}>Cancel</Button>
-            <Button onClick={submitCloseDialog}>Close Shift</Button>
+            <Button variant="outline" onClick={() => setCloseTarget(null)} disabled={isClosingSession}>Cancel</Button>
+            <Button onClick={submitCloseDialog} disabled={isClosingSession}>
+              {isClosingSession ? "Refreshing shared data..." : "Close Shift"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
