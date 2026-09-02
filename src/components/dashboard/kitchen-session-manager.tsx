@@ -1126,9 +1126,9 @@ export function KitchenSessionManager({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Item</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Unit</TableHead>
+                  <TableHead className={isBaristaDepartment ? "min-w-[240px]" : undefined}>Item</TableHead>
+                  {!isBaristaDepartment && <TableHead>Category</TableHead>}
+                  {!isBaristaDepartment && <TableHead>Unit</TableHead>}
                   <TableHead>Balance</TableHead>
                   <TableHead>Added</TableHead>
                   <TableHead>{isBaristaDepartment ? "Buying Price" : "Price"}</TableHead>
@@ -1141,8 +1141,8 @@ export function KitchenSessionManager({
                 {entry.lines.map((line) => (
                   <TableRow key={line.id}>
                     <TableCell className="font-bold">{line.itemName}</TableCell>
-                    <TableCell className="font-bold">{line.category || "-"}</TableCell>
-                    <TableCell className="font-bold">{line.unit}</TableCell>
+                    {!isBaristaDepartment && <TableCell className="font-bold">{line.category || "-"}</TableCell>}
+                    {!isBaristaDepartment && <TableCell className="font-bold">{line.unit}</TableCell>}
                     <TableCell className="font-bold">{line.previousBalance}</TableCell>
                     <TableCell className="font-bold">{line.addedQty}</TableCell>
                     <TableCell className="font-bold">{formatMoney(line.pricePerUnit)}</TableCell>
@@ -1309,9 +1309,9 @@ export function KitchenSessionManager({
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Item</TableHead>
-                        <TableHead>Category</TableHead>
-                        <TableHead>Unit</TableHead>
+                        <TableHead className={isBaristaDepartment ? "min-w-[240px]" : undefined}>Item</TableHead>
+                        {!isBaristaDepartment && <TableHead>Category</TableHead>}
+                        {!isBaristaDepartment && <TableHead>Unit</TableHead>}
                         <TableHead>Balance</TableHead>
                         <TableHead>Add</TableHead>
                         <TableHead>{isBaristaDepartment ? "Buying Price" : "Price"}</TableHead>
@@ -1327,15 +1327,19 @@ export function KitchenSessionManager({
                         const amount = roundStock(line.addedQty * line.pricePerUnit);
                         return (
                           <TableRow key={line.id}>
-                            <TableCell>
+                            <TableCell className={isBaristaDepartment ? "min-w-[240px]" : undefined}>
                               <Input value={line.itemName} onChange={(event) => updatePurchaseLine(line.id, "itemName", event.target.value)} />
                             </TableCell>
-                            <TableCell>
-                              <Input value={line.category} onChange={(event) => updatePurchaseLine(line.id, "category", event.target.value)} />
-                            </TableCell>
-                            <TableCell>
-                              <Input value={line.unit} onChange={(event) => updatePurchaseLine(line.id, "unit", event.target.value)} />
-                            </TableCell>
+                            {!isBaristaDepartment && (
+                              <TableCell>
+                                <Input value={line.category} onChange={(event) => updatePurchaseLine(line.id, "category", event.target.value)} />
+                              </TableCell>
+                            )}
+                            {!isBaristaDepartment && (
+                              <TableCell>
+                                <Input value={line.unit} onChange={(event) => updatePurchaseLine(line.id, "unit", event.target.value)} />
+                              </TableCell>
+                            )}
                             <TableCell>
                               <NumericInput min="0" value={line.previousBalance} onChange={(event: any) => updatePurchaseLine(line.id, "previousBalance", event.target.value)} />
                             </TableCell>
@@ -1362,7 +1366,7 @@ export function KitchenSessionManager({
                       })}
                       {filteredPurchaseLines.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={isBaristaDepartment ? 10 : 9} className="py-10 text-center text-xs font-black uppercase tracking-widest text-muted-foreground">
+                          <TableCell colSpan={isBaristaDepartment ? 8 : 9} className="py-10 text-center text-xs font-black uppercase tracking-widest text-muted-foreground">
                             No purchase rows match your search
                           </TableCell>
                         </TableRow>

@@ -2320,9 +2320,9 @@ export function InventoryControlView({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Item</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Unit</TableHead>
+                    <TableHead className={historyPreview.department === "barista" ? "min-w-[240px]" : undefined}>Item</TableHead>
+                    {historyPreview.department !== "barista" && <TableHead>Category</TableHead>}
+                    {historyPreview.department !== "barista" && <TableHead>Unit</TableHead>}
                     <TableHead>Previous</TableHead>
                     <TableHead>Added</TableHead>
                     <TableHead>Price</TableHead>
@@ -2334,8 +2334,8 @@ export function InventoryControlView({
                   {(entry as KitchenPurchaseHistoryEntry).lines.map((line) => (
                     <TableRow key={line.id}>
                       <TableCell className="font-bold">{line.itemName}</TableCell>
-                      <TableCell className="font-bold">{line.category || "-"}</TableCell>
-                      <TableCell className="font-bold">{line.unit}</TableCell>
+                      {historyPreview.department !== "barista" && <TableCell className="font-bold">{line.category || "-"}</TableCell>}
+                      {historyPreview.department !== "barista" && <TableCell className="font-bold">{line.unit}</TableCell>}
                       <TableCell className="font-bold">{line.previousBalance}</TableCell>
                       <TableCell className="font-bold">{line.addedQty}</TableCell>
                       <TableCell className="font-bold">TSh {roundMoney(line.pricePerUnit)}</TableCell>
