@@ -38,6 +38,7 @@ const FALLBACK_POLL_INTERVAL_MS = 60000;
 const POS_FALLBACK_POLL_INTERVAL_MS = 5000;
 const PENDING_LOCAL_WRITE_TTL_MS = 15000;
 const DIRECT_SYNC_TIMEOUT_MS = 10000;
+const SERVER_SYNC_TIMEOUT_MS = 30000;
 
 function withDirectSyncTimeout<T>(promise: Promise<T>, operation: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -60,7 +61,7 @@ function withDirectSyncTimeout<T>(promise: Promise<T>, operation: string): Promi
 
 async function fetchWithSyncTimeout(input: RequestInfo | URL, init?: RequestInit) {
   const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), DIRECT_SYNC_TIMEOUT_MS);
+  const timer = globalThis.setTimeout(() => controller.abort(), SERVER_SYNC_TIMEOUT_MS);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
