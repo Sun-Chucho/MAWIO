@@ -21,7 +21,7 @@ import {
   STORAGE_BARISTA_PURCHASE_SESSION,
 } from "@/app/lib/kitchen-session-storage";
 import { readJson, STORAGE_BARISTA_STATE, writeJson } from "@/app/lib/storage";
-import { commitBaristaCatalogAndStockMutation, commitStockArraysAtomically, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitPosCatalogMutation, commitStockArraysAtomically, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { buildInitialBaristaMenuItems } from "@/app/lib/barista-stock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -815,9 +815,7 @@ export function KitchenSessionManager({
         ...latestAllStore.filter((item) => item.lane !== department),
         ...nextKitchenStore,
       ];
-      const catalogCommit = await commitBaristaCatalogAndStockMutation(
-        baseSnapshot,
-        nextMenu,
+      const stockCommit = await commitStockArraysAtomically(
         latestAllStore,
         nextAllStore,
         latestInventoryItems,
@@ -828,10 +826,10 @@ export function KitchenSessionManager({
           record: purchaseHistoryEntry as unknown as Record<string, unknown>,
         }],
       );
-      if (!catalogCommit.ok) {
+      if (!stockCommit.ok) {
         if (
           conflictRetry < 2 &&
-          (catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed")
+          stockCommit.reason === "stock-conflict"
         ) {
           // Barista sales can legitimately change stock between hydration and
           // commit. Refresh and rebuild from the new balances automatically.
@@ -839,24 +837,31 @@ export function KitchenSessionManager({
           return;
         }
         toast({
-          title: catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
-            ? "Barista menu or stock changed"
+          title: stockCommit.reason === "stock-conflict"
+            ? "Barista stock changed"
             : "Barista purchase was not confirmed",
-          description: catalogCommit.reason === "invalid-request"
+          description: stockCommit.reason === "invalid-request"
             ? "The purchase data could not be accepted. Refresh the page and try closing the shift again."
             : "Another shared change won first or the connection failed. Nothing was partially published; refresh balances and close the shift again.",
           variant: "destructive",
         });
         return;
       }
-      setBaristaMenuItems(catalogCommit.value.menuItems as BaristaMenuItem[]);
-      setStoreItems(catalogCommit.storeItems.filter((item) => item.lane === department));
+      setStoreItems(stockCommit.storeItems.filter((item) => item.lane === department));
       setPurchaseHistory(
-        (catalogCommit.appendedValues[STORAGE_BARISTA_PURCHASE_HISTORY] ?? [
+        (stockCommit.appendedValues[STORAGE_BARISTA_PURCHASE_HISTORY] ?? [
           purchaseHistoryEntry,
           ...latestPurchaseHistory,
         ]) as KitchenPurchaseHistoryEntry[],
       );
+
+      // Stock and history are already safely committed at this point. Menu
+      // metadata is synchronized separately so a busy POS catalog can never
+      // reject or roll back the daily purchase itself.
+      const menuCommit = await commitPosCatalogMutation(STORAGE_BARISTA_STATE, baseSnapshot, nextMenu);
+      if (menuCommit.ok) {
+        setBaristaMenuItems(menuCommit.value.menuItems as BaristaMenuItem[]);
+      }
     }
 
     if (!isBaristaDepartment && !await applyStoreAndInventoryChanges(
