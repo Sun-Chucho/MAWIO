@@ -118,7 +118,7 @@ function resolveStockEffect(
  * When at least one unseen effect exists, remote fields are the baseline so a
  * sale from a stale terminal cannot overwrite another terminal's deduction.
  */
-export type StockEffectMergeIntent = "manager" | "operational" | "auto";
+export type StockEffectMergeIntent = "manager" | "manager-purchase" | "operational" | "auto";
 
 export function mergeStockEffectArrays(
   incomingValue: unknown,
@@ -192,10 +192,10 @@ export function mergeStockEffectArrays(
       JSON.stringify(Object.entries(currentPendingEffects).sort(([left], [right]) => left.localeCompare(right))) !==
         JSON.stringify(Object.entries(incomingPendingEffects).sort(([left], [right]) => left.localeCompare(right)));
     if (!recordLedgerChanged) {
-      if (intent === "operational") {
+      if (intent === "operational" || intent === "manager-purchase") {
         // An idempotent retry may carry an old menu price/name. The shared
-        // record is authoritative for metadata once the same effect ledger is
-        // already present.
+        // record is authoritative once the same effect ledger is already
+        // present. This also protects unrelated rows during a purchase save.
         mergedById.set(id, {
           ...incoming,
           ...remote,
@@ -217,9 +217,8 @@ export function mergeStockEffectArrays(
 
     // Operational POS writes append effects to transaction-current metadata,
     // so a stale cashier cannot revert a manager's latest name or price. A
-    // metadata-only manager write may be missing newer effect markers; in that
-    // direction its non-stock fields are retained while remote quantity and
-    // ledgers stay authoritative.
+    // manager purchase keeps its new buying-price metadata while applying the
+    // received quantity to transaction-current stock and effect ledgers.
     let nextRecord: StockEffectRecord = {
       ...(incomingIntroducesOperationalEffect ? incoming : remote),
       ...(incomingIntroducesOperationalEffect ? remote : incoming),

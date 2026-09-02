@@ -21,7 +21,8 @@ import {
   STORAGE_BARISTA_PURCHASE_SESSION,
 } from "@/app/lib/kitchen-session-storage";
 import { readJson, STORAGE_BARISTA_STATE, writeJson } from "@/app/lib/storage";
-import { commitPosCatalogMutation, commitStockArraysAtomically, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitPosCatalogMutation, commitPurchaseStockEffectsAtomically, commitStockArraysAtomically, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import type { AtomicBaristaStockEffectRequirement } from "@/app/lib/barista-checkout-transaction";
 import { buildInitialBaristaMenuItems } from "@/app/lib/barista-stock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -591,6 +592,11 @@ export function KitchenSessionManager({
       toast({ title: "No purchase rows to save", variant: "destructive" });
       return;
     }
+    const purchasedLines = validLines.filter((line) => line.addedQty > 0);
+    if (purchasedLines.length === 0) {
+      toast({ title: "Enter an added quantity before saving", variant: "destructive" });
+      return;
+    }
 
     const hydrated = await hydrateSharedWriteState(
       [
@@ -610,7 +616,7 @@ export function KitchenSessionManager({
     const latestPurchaseHistory = readJson<KitchenPurchaseHistoryEntry[]>(purchaseHistoryKey) ?? [];
     const purchaseHistoryEntry: KitchenPurchaseHistoryEntry = {
       ...purchaseSession,
-      lines: validLines,
+      lines: purchasedLines,
       closedAt,
       signoff: closeNotes,
     };
@@ -641,8 +647,9 @@ export function KitchenSessionManager({
       itemName: string;
       sellingPrice: number;
     }>();
+    const purchaseStockEffects: AtomicBaristaStockEffectRequirement[] = [];
 
-    validLines.forEach((line) => {
+    purchasedLines.forEach((line) => {
       const existingStore = line.itemId ? nextKitchenStore.find((item) => item.id === line.itemId) : null;
       const inventoryBeforeUpdate = existingStore ? getInventoryMatch(nextInventory, existingStore) : undefined;
       const linkedMenuItem = isBaristaDepartment
@@ -754,6 +761,24 @@ export function KitchenSessionManager({
       }
 
       if (isBaristaDepartment) {
+        const effectId = `manager-purchase:${purchaseSession.id}:${line.id}`;
+        const effect = { kind: "units" as const, delta: line.addedQty };
+        nextKitchenStore = nextKitchenStore.map((item) =>
+          item.id === updatedStore.id
+            ? { ...item, stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect } }
+            : item,
+        );
+        nextInventory = nextInventory.map((item) =>
+          item.id === updatedInventory?.id
+            ? { ...item, stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect } }
+            : item,
+        );
+        updatedStore = nextKitchenStore.find((item) => item.id === updatedStore.id)!;
+        updatedInventory = nextInventory.find((item) => item.id === updatedInventory?.id);
+        purchaseStockEffects.push(
+          { id: effectId, target: "store", itemId: updatedStore.id },
+          { id: effectId, target: "inventory", itemId: updatedInventory!.id },
+        );
         baristaLineLinks.set(line.id, {
           storeItemId: updatedStore.id,
           ...(updatedInventory ? { inventoryItemId: updatedInventory.id } : {}),
@@ -767,7 +792,7 @@ export function KitchenSessionManager({
     if (isBaristaDepartment) {
       const snapshot = baristaSnapshot ?? {};
       let nextMenu = [...currentBaristaMenu];
-      validLines.forEach((line) => {
+      purchasedLines.forEach((line) => {
         const link = baristaLineLinks.get(line.id);
         const normalizedName = normalizeStockName(link?.itemName ?? line.itemName);
         const match = nextMenu.find((item) => item.id === link?.menuItem?.id)
@@ -815,16 +840,15 @@ export function KitchenSessionManager({
         ...latestAllStore.filter((item) => item.lane !== department),
         ...nextKitchenStore,
       ];
-      const stockCommit = await commitStockArraysAtomically(
-        latestAllStore,
+      const stockCommit = await commitPurchaseStockEffectsAtomically(
         nextAllStore,
-        latestInventoryItems,
         nextInventory,
-        `session-close:${department}:purchase:${purchaseSession.id}`,
+        purchaseStockEffects,
         [{
           key: STORAGE_BARISTA_PURCHASE_HISTORY,
           record: purchaseHistoryEntry as unknown as Record<string, unknown>,
         }],
+        `session-close:${department}:purchase:${purchaseSession.id}`,
       );
       if (!stockCommit.ok) {
         if (

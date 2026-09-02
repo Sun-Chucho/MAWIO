@@ -1717,6 +1717,7 @@ export async function commitBaristaStockEffectsAndLogs<TStoreItem, TInventoryIte
   appendRecords: AtomicBaristaStockMutationRequest["appendRecords"] = [],
   usageCapacityRequirements: NonNullable<AtomicBaristaStockMutationRequest["usageCapacityRequirements"]> = [],
   managerMutation?: AtomicBaristaStockMutationRequest["managerMutation"],
+  managerPurchase?: AtomicBaristaStockMutationRequest["managerPurchase"],
 ): Promise<AtomicBaristaStockCommitResult<TStoreItem, TInventoryItem>> {
   if (typeof window === "undefined") return { ok: false, reason: "sync-failed" };
   const request = sanitizeForStorage({
@@ -1726,6 +1727,7 @@ export async function commitBaristaStockEffectsAndLogs<TStoreItem, TInventoryIte
     appendRecords,
     usageCapacityRequirements,
     ...(managerMutation ? { managerMutation } : {}),
+    ...(managerPurchase ? { managerPurchase } : {}),
   }) as AtomicBaristaStockMutationRequest;
   const keys = Array.from(new Set([
     MAIN_STORE_STORAGE_KEY,
@@ -1809,6 +1811,26 @@ export async function commitBaristaStockEffectsAndLogs<TStoreItem, TInventoryIte
       return { ok: false, reason: "sync-failed" };
     }
   }
+}
+
+/** Add a manager purchase to transaction-current stock using idempotent
+ * per-row effects, while saving its history record in the same commit. */
+export function commitPurchaseStockEffectsAtomically<TStoreItem, TInventoryItem>(
+  nextStoreItems: TStoreItem[],
+  nextInventoryItems: TInventoryItem[],
+  requiredStockEffects: AtomicBaristaStockEffectRequirement[],
+  appendRecords: AtomicManagerHistoryAppendRecord[],
+  purchaseId: string,
+) {
+  return commitBaristaStockEffectsAndLogs(
+    nextStoreItems,
+    nextInventoryItems,
+    requiredStockEffects,
+    appendRecords,
+    [],
+    undefined,
+    { id: purchaseId },
+  );
 }
 
 /** Replace Main Store and Inventory together after verifying that both still

@@ -134,6 +134,9 @@ export type AtomicBaristaStockMutationRequest = {
     expectedStoreItems: unknown[];
     expectedInventoryItems: unknown[];
   };
+  managerPurchase?: {
+    id: string;
+  };
   usageCapacityRequirements?: Array<{
     movementId: string;
     destination: string;
@@ -713,6 +716,7 @@ export function applyAtomicBaristaStockMutation(
   const appendRecords = Array.isArray(request.appendRecords) ? request.appendRecords : [];
   const currentAppendedValues = getCurrentAppendedValues(currentRoot, appendRecords);
   const managerMutation = asRecord(request.managerMutation);
+  const managerPurchase = asRecord(request.managerPurchase);
   const failure = (
     reason: "stock-conflict" | "usage-capacity-exceeded" | "invalid-request",
   ): AtomicBaristaStockMutation => ({
@@ -730,7 +734,7 @@ export function applyAtomicBaristaStockMutation(
     !Array.isArray(request.appendRecords) ||
     (request.usageCapacityRequirements !== undefined && !Array.isArray(request.usageCapacityRequirements)) ||
     appendRecords.some((entry) =>
-      (managerMutation
+      (managerMutation || managerPurchase
         ? !isManagerHistoryStorageKey(entry.key)
         : entry.key !== BARISTA_WASTE_STORAGE_KEY && entry.key !== STORE_USAGE_STORAGE_KEY) ||
       !asRecord(entry.record) ||
@@ -753,6 +757,15 @@ export function applyAtomicBaristaStockMutation(
     !Array.isArray(managerMutation.expectedStoreItems) ||
     !Array.isArray(managerMutation.expectedInventoryItems) ||
     request.requiredStockEffects.length > 0 ||
+    (request.usageCapacityRequirements?.length ?? 0) > 0
+  )) {
+    return failure("invalid-request");
+  }
+  if (request.managerPurchase !== undefined && (
+    managerMutation ||
+    !managerPurchase ||
+    typeof managerPurchase.id !== "string" ||
+    !managerPurchase.id.trim() ||
     (request.usageCapacityRequirements?.length ?? 0) > 0
   )) {
     return failure("invalid-request");
@@ -793,10 +806,18 @@ export function applyAtomicBaristaStockMutation(
 
   const nextStoreItems = managerMutation
     ? request.storeItems
-    : mergeStockEffectArrays(request.storeItems, currentStoreItems, "operational");
+    : mergeStockEffectArrays(
+        request.storeItems,
+        currentStoreItems,
+        managerPurchase ? "manager-purchase" : "operational",
+      );
   const nextInventoryItems = managerMutation
     ? request.inventoryItems
-    : mergeStockEffectArrays(request.inventoryItems, currentInventoryItems, "operational");
+    : mergeStockEffectArrays(
+        request.inventoryItems,
+        currentInventoryItems,
+        managerPurchase ? "manager-purchase" : "operational",
+      );
   if (!Array.isArray(nextStoreItems) || !Array.isArray(nextInventoryItems)) {
     return failure("invalid-request");
   }
