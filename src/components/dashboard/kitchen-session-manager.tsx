@@ -582,7 +582,7 @@ export function KitchenSessionManager({
     }
   };
 
-  const closePurchaseSession = async () => {
+  const closePurchaseSession = async (conflictRetry = 0) => {
     if (!purchaseSession) return;
     const closedAt = combineDateAndTime(closeDate, closeTime);
 
@@ -608,6 +608,22 @@ export function KitchenSessionManager({
     const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
     let nextInventory = [...latestInventoryItems];
     const latestPurchaseHistory = readJson<KitchenPurchaseHistoryEntry[]>(purchaseHistoryKey) ?? [];
+    const purchaseHistoryEntry: KitchenPurchaseHistoryEntry = {
+      ...purchaseSession,
+      lines: validLines,
+      closedAt,
+      signoff: closeNotes,
+    };
+
+    // A lost response can leave the atomic Barista commit completed while the
+    // browser still shows the old open session. Treat the history record as
+    // the durable completion marker so retrying never adds the purchase twice.
+    if (isBaristaDepartment && latestPurchaseHistory.some((entry) => entry.id === purchaseSession.id)) {
+      persistPurchaseSession(null);
+      setCloseTarget(null);
+      toast({ title: purchaseCopy.success });
+      return;
+    }
     const baristaSnapshot = isBaristaDepartment
       ? (readJson<BaristaPosSnapshot>(STORAGE_BARISTA_STATE) ?? {})
       : null;
@@ -807,19 +823,40 @@ export function KitchenSessionManager({
         latestInventoryItems,
         nextInventory,
         `session-close:${department}:purchase:${purchaseSession.id}`,
+        [{
+          key: STORAGE_BARISTA_PURCHASE_HISTORY,
+          record: purchaseHistoryEntry as unknown as Record<string, unknown>,
+        }],
       );
       if (!catalogCommit.ok) {
+        if (
+          conflictRetry < 2 &&
+          (catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed")
+        ) {
+          // Barista sales can legitimately change stock between hydration and
+          // commit. Refresh and rebuild from the new balances automatically.
+          await closePurchaseSession(conflictRetry + 1);
+          return;
+        }
         toast({
           title: catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
             ? "Barista menu or stock changed"
             : "Barista purchase was not confirmed",
-          description: "Another shared change won first or the connection failed. Nothing was partially published; refresh balances and close the shift again.",
+          description: catalogCommit.reason === "invalid-request"
+            ? "The purchase data could not be accepted. Refresh the page and try closing the shift again."
+            : "Another shared change won first or the connection failed. Nothing was partially published; refresh balances and close the shift again.",
           variant: "destructive",
         });
         return;
       }
       setBaristaMenuItems(catalogCommit.value.menuItems as BaristaMenuItem[]);
       setStoreItems(catalogCommit.storeItems.filter((item) => item.lane === department));
+      setPurchaseHistory(
+        (catalogCommit.appendedValues[STORAGE_BARISTA_PURCHASE_HISTORY] ?? [
+          purchaseHistoryEntry,
+          ...latestPurchaseHistory,
+        ]) as KitchenPurchaseHistoryEntry[],
+      );
     }
 
     if (!isBaristaDepartment && !await applyStoreAndInventoryChanges(
@@ -830,15 +867,9 @@ export function KitchenSessionManager({
       `session-close:${department}:purchase:${purchaseSession.id}`,
     )) return;
 
-    writeJson(purchaseHistoryKey, [
-      {
-        ...purchaseSession,
-        lines: validLines,
-        closedAt,
-        signoff: closeNotes,
-      },
-      ...latestPurchaseHistory,
-    ]);
+    if (!isBaristaDepartment) {
+      writeJson(purchaseHistoryKey, [purchaseHistoryEntry, ...latestPurchaseHistory]);
+    }
     persistPurchaseSession(null);
     setCloseTarget(null);
     toast({ title: purchaseCopy.success });
