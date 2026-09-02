@@ -19,6 +19,9 @@ const firebaseConfig = {
 const measurementId =
   process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID ?? "";
 
+const anonymousAuthEnabled =
+  process.env.NEXT_PUBLIC_FIREBASE_ANONYMOUS_AUTH_ENABLED === "true";
+
 export const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const firebaseAuth = getAuth(firebaseApp);
 export const firebaseDatabase = getDatabase(firebaseApp);
@@ -40,6 +43,14 @@ export function ensureFirebaseAuthReady() {
       }
 
       if (firebaseAuth.currentUser) {
+        return;
+      }
+
+      // This deployment uses the public Realtime Database rules in
+      // database.rules.json. Anonymous Authentication is not configured in
+      // the Firebase project, so attempting signInAnonymously only produces
+      // auth/configuration-not-found and delays every sync operation.
+      if (!anonymousAuthEnabled) {
         return;
       }
 

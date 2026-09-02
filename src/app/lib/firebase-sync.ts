@@ -1409,6 +1409,20 @@ export async function commitBaristaCheckoutWithStock<
     }
   };
 
+  // The app route is the dependable primary path on deployments where the
+  // browser Firebase transport or optional anonymous auth is unavailable.
+  // It performs the same ETag-protected root transaction server-side.
+  try {
+    const serverOutcome = await commitServerAtomicBaristaCheckout(request);
+    if (!serverOutcome.ok) {
+      const current = applyConflictOutcome(serverOutcome);
+      return { ok: false, reason: serverOutcome.reason, ...current };
+    }
+    return { ok: true, ...applyOutcome(serverOutcome) };
+  } catch (serverError) {
+    console.warn("Server atomic Barista checkout unavailable; trying direct Firebase.", serverError);
+  }
+
   let transactionOutcome: ReturnType<typeof applyAtomicBaristaCheckout> | null = null;
   try {
     await withDirectSyncTimeout(
@@ -1437,21 +1451,11 @@ export async function commitBaristaCheckoutWithStock<
     return { ok: true, ...applyOutcome(committedOutcome) };
   } catch (directError) {
     console.error("Direct atomic Barista checkout failed", directError);
-    try {
-      const serverOutcome = await commitServerAtomicBaristaCheckout(request);
-      if (!serverOutcome.ok) {
-        const current = applyConflictOutcome(serverOutcome);
-        return { ok: false, reason: serverOutcome.reason, ...current };
-      }
-      return { ok: true, ...applyOutcome(serverOutcome) };
-    } catch (serverError) {
-      storageKeys.forEach((key) => {
-        if (isLatestStorageWrite(key, generations[key])) delete _pendingLocalWrites[key];
-      });
-      emitConnectionState(false);
-      console.error("Server atomic Barista checkout failed", serverError);
-      return { ok: false, reason: "sync-failed" };
-    }
+    storageKeys.forEach((key) => {
+      if (isLatestStorageWrite(key, generations[key])) delete _pendingLocalWrites[key];
+    });
+    emitConnectionState(false);
+    return { ok: false, reason: "sync-failed" };
   }
 }
 
@@ -2415,6 +2419,68 @@ export async function hydrateStorageKeyFromFirebase<T = unknown>(key: string): P
     return sanitizedValue;
   };
 
+  const hydrateFromServer = async (): Promise<StorageHydrationResult<T>> => {
+    const serverValue = sanitizeForStorage(
+      sanitizeSyncedValue(key, await fetchServerSyncedStorageValue(key)),
+    );
+    const isPosState = key === "orange-hotel-kitchen-state" || key === "orange-hotel-barista-state";
+    if (isPosState) {
+      const localValue = getLocalSyncedValue(key);
+      const canonicalValue = sanitizeForStorage(getCanonicalDefaultValue(key));
+      const preferredValue = serverValue !== null
+        ? (hasUsableSyncedValue(key, localValue)
+            ? mergeRemoteValueWithLocalOnlyRecords(key, localValue, serverValue)
+            : serverValue)
+        : (hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue);
+      const committedValue = preferredValue === null
+        ? null
+        : sanitizeForStorage(
+            sanitizeSyncedValue(
+              key,
+              await writeServerSyncedStorageValue(
+                key,
+                preferredValue,
+                serverValue === null ? { initializeIfMissing: true } : undefined,
+              ),
+            ),
+          );
+      const sanitizedServerValue = committedValue === null ? null : applyHydratedValue(committedValue);
+      markSyncHealthy(key);
+      return { ok: true, value: sanitizedServerValue as T | null, remoteExists: serverValue !== null };
+    }
+
+    if (serverValue !== null) {
+      const sanitizedServerValue = applyHydratedValue(serverValue);
+      markSyncHealthy(key);
+      return { ok: true, value: sanitizedServerValue as T | null, remoteExists: true };
+    }
+    const localValue = getLocalSyncedValue(key);
+    const canonicalValue = sanitizeForStorage(getCanonicalDefaultValue(key));
+    const initialValue = hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue;
+    const committedValue = initialValue === null || initialValue === undefined
+      ? null
+      : sanitizeForStorage(sanitizeSyncedValue(
+          key,
+          await writeServerSyncedStorageValue(
+            key,
+            initialValue,
+            { initializeIfMissing: true },
+          ),
+        ));
+    const sanitizedServerValue = committedValue === null ? null : applyHydratedValue(committedValue);
+    markSyncHealthy(key);
+    return { ok: true, value: sanitizedServerValue as T | null, remoteExists: false };
+  };
+
+  // Same-origin HTTP is more reliable than the browser SDK on networks that
+  // block Firebase's realtime transport. Keep the SDK transaction below as a
+  // fallback so hydration still works if the app route is temporarily down.
+  try {
+    return await hydrateFromServer();
+  } catch (serverError) {
+    console.warn(`Server hydrate unavailable for ${key}; trying direct Firebase.`, serverError);
+  }
+
   try {
     await withDirectSyncTimeout(ensureFirebaseAuthReady(), `Firebase authentication for ${key}`);
     const storageRef = ref(firebaseDatabase, toStoragePath(key));
@@ -2489,60 +2555,8 @@ export async function hydrateStorageKeyFromFirebase<T = unknown>(key: string): P
     return { ok: true, value: sanitizedPreferredValue as T | null, remoteExists };
   } catch (error) {
     console.error(`Firebase direct hydrate failed for ${key}`, error);
-    try {
-      const serverValue = sanitizeForStorage(sanitizeSyncedValue(key, await fetchServerSyncedStorageValue(key)));
-      const isPosState = key === "orange-hotel-kitchen-state" || key === "orange-hotel-barista-state";
-      if (isPosState) {
-        const localValue = getLocalSyncedValue(key);
-        const canonicalValue = sanitizeForStorage(getCanonicalDefaultValue(key));
-        const preferredValue = serverValue !== null
-          ? (hasUsableSyncedValue(key, localValue)
-              ? mergeRemoteValueWithLocalOnlyRecords(key, localValue, serverValue)
-              : serverValue)
-          : (hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue);
-        const committedValue = preferredValue === null
-          ? null
-          : sanitizeForStorage(
-              sanitizeSyncedValue(
-                key,
-                await writeServerSyncedStorageValue(
-                  key,
-                  preferredValue,
-                  serverValue === null ? { initializeIfMissing: true } : undefined,
-                ),
-              ),
-            );
-        const sanitizedServerValue = committedValue === null ? null : applyHydratedValue(committedValue);
-        markSyncHealthy(key);
-        return { ok: true, value: sanitizedServerValue as T | null, remoteExists: serverValue !== null };
-      }
-
-      if (serverValue !== null) {
-        const sanitizedServerValue = applyHydratedValue(serverValue);
-        markSyncHealthy(key);
-        return { ok: true, value: sanitizedServerValue as T | null, remoteExists: true };
-      }
-      const localValue = getLocalSyncedValue(key);
-      const canonicalValue = sanitizeForStorage(getCanonicalDefaultValue(key));
-      const initialValue = hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue;
-      const committedValue = initialValue === null || initialValue === undefined
-        ? null
-        : sanitizeForStorage(sanitizeSyncedValue(
-            key,
-            await writeServerSyncedStorageValue(
-              key,
-              initialValue,
-              { initializeIfMissing: true },
-            ),
-          ));
-      const sanitizedServerValue = committedValue === null ? null : applyHydratedValue(committedValue);
-      markSyncHealthy(key);
-      return { ok: true, value: sanitizedServerValue as T | null, remoteExists: false };
-    } catch (serverError) {
-      emitConnectionState(false);
-      console.error(`Server hydrate fallback failed for ${key}`, serverError);
-      return { ok: false, remoteExists: false };
-    }
+    emitConnectionState(false);
+    return { ok: false, remoteExists: false };
   }
 }
 

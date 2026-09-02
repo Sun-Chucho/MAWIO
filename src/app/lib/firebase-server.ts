@@ -4,6 +4,8 @@ const FIREBASE_DATABASE_URL =
   process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL ??
   "https://mawio-67c3b-default-rtdb.firebaseio.com/";
 const FIREBASE_STORAGE_ROOT = "mawio";
+const FIREBASE_ANONYMOUS_AUTH_ENABLED =
+  process.env.FIREBASE_ANONYMOUS_AUTH_ENABLED === "true";
 
 type FirebaseAnonSession = {
   idToken: string;
@@ -74,11 +76,15 @@ async function requestDatabasePath(path: string, init?: RequestInit, allowedStat
   };
 
   let response: Response;
-  try {
-    const { idToken } = await getAnonymousSession();
-    response = await runRequest(idToken);
-  } catch {
+  if (!FIREBASE_ANONYMOUS_AUTH_ENABLED) {
     response = await runRequest();
+  } else {
+    try {
+      const { idToken } = await getAnonymousSession();
+      response = await runRequest(idToken);
+    } catch {
+      response = await runRequest();
+    }
   }
 
   if ((response.status === 401 || response.status === 403) && !response.ok) {
