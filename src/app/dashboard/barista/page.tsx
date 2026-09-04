@@ -522,6 +522,8 @@ export default function BaristaPage() {
   const [drinkPrice, setDrinkPrice] = useState("");
   const [drinkCategory, setDrinkCategory] = useState<Exclude<BaristaCategory, "all">>("coffee");
   const [drinkPrepMinutes, setDrinkPrepMinutes] = useState("5");
+  const [drinkSaving, setDrinkSaving] = useState(false);
+  const drinkSaveInFlightRef = useRef(false);
   const [directorTab, setDirectorTab] = useState<"inventory" | "finance" | "purchases" | "sales">("finance");
   const [directorSalesDateFilter, setDirectorSalesDateFilter] = useState<SalesDateFilter>("day");
   const [category, setCategory] = useState<BaristaCategory>("all");
@@ -2894,102 +2896,162 @@ export default function BaristaPage() {
 
   const saveDrink = async () => {
     const name = drinkName.trim();
-    const price = parseFloat(drinkPrice);
-    if (!name || isNaN(price) || price < 0) return;
-    const prep = Math.max(0, parseInt(drinkPrepMinutes, 10) || 5);
+    const rawPrice = drinkPrice.trim();
+    const price = Number(rawPrice);
+    const rawPrep = drinkPrepMinutes.trim();
+    const prepValue = rawPrep ? Number(rawPrep) : 5;
 
-    const activeBaristaKey = getActiveBaristaStateKey();
-    const hydration = await Promise.all([
-      hydrateStorageKeyFromFirebase(activeBaristaKey),
-      hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
-      hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
-    ]);
-    if (!hydration.every((result) => result.ok)) {
-      window.alert("The shared Barista menu could not be refreshed. No drink change was saved; reconnect and try again.");
+    if (!name) {
+      toast({
+        title: "Enter a drink name",
+        description: "The drink was not saved. Add a name and try again.",
+        variant: "destructive",
+      });
       return;
     }
-    const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
-      activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
-    );
-    const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
-    const allStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
-    const latestStoreItems = allStoreItems.filter((item) => item.lane === "barista");
-    const sourceMenuItems = buildBaristaDisplayCatalog(
-      snapshot.menuItems,
-      snapshot.catalogRevision,
-      latestInventoryItems,
-      latestStoreItems,
-    );
-    let next: BaristaMenuItem[];
-    let nextInventoryItems = latestInventoryItems;
-    let nextStoreItems = allStoreItems;
-    if (drinkEditId) {
-      const currentItem = sourceMenuItems.find((item) => item.id === drinkEditId);
-      if (!currentItem) {
-        window.alert("This Barista item was removed by another manager. The latest menu was loaded; nothing was changed.");
-        setDrinkEditId(null);
+    if (!rawPrice || !Number.isFinite(price) || price < 0) {
+      toast({
+        title: "Enter a valid selling price",
+        description: "Use a number of zero or more, without commas.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!Number.isFinite(prepValue) || prepValue < 0) {
+      toast({
+        title: "Enter a valid prep time",
+        description: "Prep time must be zero minutes or more.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (drinkSaveInFlightRef.current) return;
+
+    const prep = Math.floor(prepValue);
+    const wasEditing = Boolean(drinkEditId);
+    drinkSaveInFlightRef.current = true;
+    setDrinkSaving(true);
+
+    try {
+      const activeBaristaKey = getActiveBaristaStateKey();
+      const hydration = await Promise.all([
+        hydrateStorageKeyFromFirebase(activeBaristaKey),
+        hydrateStorageKeyFromFirebase(STORAGE_INVENTORY_ITEMS),
+        hydrateStorageKeyFromFirebase(STORAGE_MAIN_STORE_ITEMS),
+      ]);
+      if (!hydration.every((result) => result.ok)) {
+        toast({
+          title: "Drink was not saved",
+          description: "The shared Barista menu could not be refreshed. Check the connection and try again.",
+          variant: "destructive",
+        });
         return;
       }
-      next = sourceMenuItems.map((item) =>
-        item.id === drinkEditId ? { ...item, name, price, category: drinkCategory, prepMinutes: prep } : item,
+      const snapshot = readPosState<BaristaTicket, BaristaPaymentRecord, BaristaMenuItem>(
+        activeBaristaKey, STORAGE_TICKETS, STORAGE_SEQ, STORAGE_PAYMENTS, STORAGE_MENU, 490,
       );
-      const targetKey = normalizeBaristaTarget(currentItem.name);
-      const linkedInventoryItem = latestInventoryItems.find((item) =>
-        item.id === currentItem.inventoryItemId || item.id === currentItem.id,
-      ) ?? latestInventoryItems.find((item) =>
-        item.category === "Bar" && normalizeBaristaTarget(getBaristaInventoryLabel(item)) === targetKey,
+      const latestInventoryItems = readJson<InventoryItem[]>(STORAGE_INVENTORY_ITEMS) ?? [];
+      const allStoreItems = readJson<MainStoreItem[]>(STORAGE_MAIN_STORE_ITEMS) ?? [];
+      const latestStoreItems = allStoreItems.filter((item) => item.lane === "barista");
+      const sourceMenuItems = buildBaristaDisplayCatalog(
+        snapshot.menuItems,
+        snapshot.catalogRevision,
+        latestInventoryItems,
+        latestStoreItems,
       );
-      const linkedStoreItem = allStoreItems.find((item) =>
-        item.lane === "barista" &&
-        (item.id === currentItem.storeItemId || normalizeBaristaTarget(getStoreItemLabel(item)) === targetKey),
+      let next: BaristaMenuItem[];
+      let nextInventoryItems = latestInventoryItems;
+      let nextStoreItems = allStoreItems;
+      if (drinkEditId) {
+        const currentItem = sourceMenuItems.find((item) => item.id === drinkEditId);
+        if (!currentItem) {
+          toast({
+            title: "Drink was not saved",
+            description: "This item was removed by another manager. The latest menu has been loaded.",
+            variant: "destructive",
+          });
+          setDrinkEditId(null);
+          return;
+        }
+        next = sourceMenuItems.map((item) =>
+          item.id === drinkEditId ? { ...item, name, price, category: drinkCategory, prepMinutes: prep } : item,
+        );
+        const targetKey = normalizeBaristaTarget(currentItem.name);
+        const linkedInventoryItem = latestInventoryItems.find((item) =>
+          item.id === currentItem.inventoryItemId || item.id === currentItem.id,
+        ) ?? latestInventoryItems.find((item) =>
+          item.category === "Bar" && normalizeBaristaTarget(getBaristaInventoryLabel(item)) === targetKey,
+        );
+        const linkedStoreItem = allStoreItems.find((item) =>
+          item.lane === "barista" &&
+          (item.id === currentItem.storeItemId || normalizeBaristaTarget(getStoreItemLabel(item)) === targetKey),
+        );
+        nextInventoryItems = latestInventoryItems.map((item) =>
+          linkedInventoryItem && item.id === linkedInventoryItem.id
+            ? { ...item, sellingPrice: price, price }
+            : item,
+        );
+        nextStoreItems = allStoreItems.map((item) =>
+          linkedStoreItem && item.id === linkedStoreItem.id
+            ? { ...item, sellingPrice: price }
+            : item,
+        );
+      } else {
+        const newDrink: BaristaMenuItem = {
+          id: `d-${Date.now()}`,
+          name,
+          price,
+          category: drinkCategory,
+          prepMinutes: prep,
+        };
+        next = [...sourceMenuItems, newDrink];
+      }
+      const catalogCommit = await commitBaristaCatalogAndStockMutation(
+        snapshot,
+        next,
+        allStoreItems,
+        nextStoreItems,
+        latestInventoryItems,
+        nextInventoryItems,
       );
-      nextInventoryItems = latestInventoryItems.map((item) =>
-        linkedInventoryItem && item.id === linkedInventoryItem.id
-          ? { ...item, sellingPrice: price, price }
-          : item,
-      );
-      nextStoreItems = allStoreItems.map((item) =>
-        linkedStoreItem && item.id === linkedStoreItem.id
-          ? { ...item, sellingPrice: price }
-          : item,
-      );
-    } else {
-      const newDrink: BaristaMenuItem = {
-        id: `d-${Date.now()}`,
-        name,
-        price,
-        category: drinkCategory,
-        prepMinutes: prep,
-      };
-      next = [...sourceMenuItems, newDrink];
+      if (!catalogCommit.ok) {
+        toast({
+          title: "Drink was not saved",
+          description: catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
+            ? "Another manager or sale changed the menu first. Review the latest values and try again."
+            : "The shared Barista menu did not confirm the change. Check the connection and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setStoredMenuItems(buildBaristaDisplayCatalog(
+        catalogCommit.value.menuItems,
+        catalogCommit.value.catalogRevision,
+        catalogCommit.inventoryItems,
+        catalogCommit.storeItems,
+      ));
+      setInventoryItems(catalogCommit.inventoryItems);
+      setBaristaStoreItems(catalogCommit.storeItems.filter((item) => item.lane === "barista"));
+      setDrinkEditId(null);
+      setDrinkName("");
+      setDrinkPrice("");
+      setDrinkPrepMinutes("5");
+      setDrinkCategory("coffee");
+      toast({
+        title: wasEditing ? "Drink changes saved" : "Drink added",
+        description: `${name} is now saved in the shared Barista menu.`,
+      });
+    } catch (error) {
+      console.error("Unexpected Barista drink save failure", error);
+      toast({
+        title: "Drink was not saved",
+        description: "An unexpected save error occurred. Check the connection and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      drinkSaveInFlightRef.current = false;
+      setDrinkSaving(false);
     }
-    const catalogCommit = await commitBaristaCatalogAndStockMutation(
-      snapshot,
-      next,
-      allStoreItems,
-      nextStoreItems,
-      latestInventoryItems,
-      nextInventoryItems,
-    );
-    if (!catalogCommit.ok) {
-      window.alert(catalogCommit.reason === "catalog-changed" || catalogCommit.reason === "stock-changed"
-        ? "Another manager or sale changed the Barista menu or stock first. Nothing was overwritten; review the latest values and try again."
-        : "The Barista menu change could not be confirmed in shared storage. Nothing was saved; reconnect and try again.");
-      return;
-    }
-    setStoredMenuItems(buildBaristaDisplayCatalog(
-      catalogCommit.value.menuItems,
-      catalogCommit.value.catalogRevision,
-      catalogCommit.inventoryItems,
-      catalogCommit.storeItems,
-    ));
-    setInventoryItems(catalogCommit.inventoryItems);
-    setBaristaStoreItems(catalogCommit.storeItems.filter((item) => item.lane === "barista"));
-    setDrinkEditId(null);
-    setDrinkName("");
-    setDrinkPrice("");
-    setDrinkPrepMinutes("5");
-    setDrinkCategory("coffee");
   };
 
   const startEditDrink = (item: BaristaMenuItem) => {
@@ -3098,12 +3160,12 @@ export default function BaristaPage() {
             />
           </div>
           <div className="md:col-span-2 lg:col-span-4 flex gap-2">
-            <Button onClick={saveDrink} className="gap-2">
+            <Button type="button" onClick={() => void saveDrink()} className="gap-2" disabled={drinkSaving}>
               <Plus className="h-4 w-4" />
-              {drinkEditId ? "Save Changes" : "Add Drink"}
+              {drinkSaving ? "Saving..." : drinkEditId ? "Save Changes" : "Add Drink"}
             </Button>
             {drinkEditId && (
-              <Button variant="outline" onClick={() => { setDrinkEditId(null); setDrinkName(""); setDrinkPrice(""); setDrinkPrepMinutes("5"); setDrinkCategory("coffee"); }}>
+              <Button type="button" variant="outline" disabled={drinkSaving} onClick={() => { setDrinkEditId(null); setDrinkName(""); setDrinkPrice(""); setDrinkPrepMinutes("5"); setDrinkCategory("coffee"); }}>
                 Cancel
               </Button>
             )}

@@ -556,7 +556,15 @@ export default function BookingPage() {
   };
 
   const redirectToBookedRooms = (tab: TransactionTab) => {
-    window.location.replace(`/dashboard/cashier?tab=${tab}&refresh=${Date.now()}#booked-rooms`);
+    setTransactionTab(tab);
+    setShowSettlementPopup(false);
+    setShowPayNowPopup(false);
+    if (typeof window !== "undefined") {
+      const element = document.getElementById("booked-rooms");
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth" });
+      }
+    }
   };
 
   const confirmCreditBooking = async () => {

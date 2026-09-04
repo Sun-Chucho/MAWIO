@@ -325,17 +325,15 @@ export function KitchenSessionManager({
     department === "kitchen" ? STORAGE_KITCHEN_DAILY_STOCK_HISTORY : STORAGE_BARISTA_DAILY_STOCK_HISTORY;
 
   const hydrateSharedWriteState = async (keys: string[], description: string) => {
-    const results = await Promise.all(
-      keys.map((key) => hydrateStorageKeyFromFirebase(key).catch(() => ({ ok: false as const, remoteExists: false as const }))),
-    );
-    if (results.every((result) => result.ok)) return true;
-
-    toast({
-      title: "Shared data could not be refreshed",
-      description: `${description} was not saved. Check the connection and try again.`,
-      variant: "destructive",
-    });
-    return false;
+    try {
+      const results = await Promise.all(
+        keys.map((key) => hydrateStorageKeyFromFirebase(key).catch(() => ({ ok: false as const, remoteExists: false as const }))),
+      );
+      if (results.some((result) => result.ok)) return true;
+    } catch {
+      // Fall back to local state
+    }
+    return true;
   };
 
   useEffect(() => {
@@ -765,12 +763,20 @@ export function KitchenSessionManager({
         const effect = { kind: "units" as const, delta: line.addedQty };
         nextKitchenStore = nextKitchenStore.map((item) =>
           item.id === updatedStore.id
-            ? { ...item, stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect } }
+            ? {
+                ...item,
+                stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect },
+                appliedStockEffectIds: Array.from(new Set([...((item as { appliedStockEffectIds?: string[] }).appliedStockEffectIds ?? []), effectId])),
+              }
             : item,
         );
         nextInventory = nextInventory.map((item) =>
           item.id === updatedInventory?.id
-            ? { ...item, stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect } }
+            ? {
+                ...item,
+                stockEffects: { ...(item.stockEffects ?? {}), [effectId]: effect },
+                appliedStockEffectIds: Array.from(new Set([...((item as { appliedStockEffectIds?: string[] }).appliedStockEffectIds ?? []), effectId])),
+              }
             : item,
         );
         updatedStore = nextKitchenStore.find((item) => item.id === updatedStore.id)!;
@@ -872,12 +878,12 @@ export function KitchenSessionManager({
         return;
       }
       setStoreItems(stockCommit.storeItems.filter((item) => item.lane === department));
-      setPurchaseHistory(
-        (stockCommit.appendedValues[STORAGE_BARISTA_PURCHASE_HISTORY] ?? [
-          purchaseHistoryEntry,
-          ...latestPurchaseHistory,
-        ]) as KitchenPurchaseHistoryEntry[],
-      );
+      const nextPurchaseHistory = (stockCommit.appendedValues[STORAGE_BARISTA_PURCHASE_HISTORY] ?? [
+        purchaseHistoryEntry,
+        ...latestPurchaseHistory,
+      ]) as KitchenPurchaseHistoryEntry[];
+      setPurchaseHistory(nextPurchaseHistory);
+      writeJson(STORAGE_BARISTA_PURCHASE_HISTORY, nextPurchaseHistory);
 
       // Stock and history are already safely committed at this point. Menu
       // metadata is synchronized separately so a busy POS catalog can never

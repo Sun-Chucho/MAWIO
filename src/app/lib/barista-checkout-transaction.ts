@@ -356,7 +356,7 @@ function hasRequiredStockEffect(
   if (!value) return false;
   const appliedIds = getStringArray(value.appliedStockEffectIds);
   const stockEffects = asRecord(value.stockEffects);
-  if (appliedIds.includes(requirement.id) && Boolean(stockEffects?.[requirement.id])) return true;
+  if (Boolean(stockEffects?.[requirement.id]) || appliedIds.includes(requirement.id)) return true;
   if (!requirement.allowPending) return false;
   return Boolean(asRecord(value.pendingStockEffects)?.[requirement.id]);
 }

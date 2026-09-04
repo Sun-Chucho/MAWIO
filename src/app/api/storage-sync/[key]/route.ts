@@ -270,7 +270,15 @@ function protectIncomingSyncedValue(
   }
 
   if (
-    (key === "orange-hotel-barista-waste" || key === "orange-hotel-store-usage") &&
+    (key === "orange-hotel-barista-waste" ||
+     key === "orange-hotel-store-usage" ||
+     key === "orange-hotel-kitchen-purchase-history" ||
+     key === "orange-hotel-kitchen-daily-stock-history" ||
+     key === "orange-hotel-barista-purchase-history" ||
+     key === "orange-hotel-barista-daily-stock-history" ||
+     key === "orange-hotel-expenses" ||
+     key === "orange-hotel-laundry-records" ||
+     key === "orange-hotel-cancelled-tickets") &&
     Array.isArray(currentValue) &&
     Array.isArray(incomingValue)
   ) {

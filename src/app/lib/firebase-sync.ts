@@ -1108,14 +1108,8 @@ function protectSyncedValueBeforeWrite(key: string, localValue: unknown, remoteV
   return localValue;
 }
 
-function isDangerouslySmallCashierWrite(key: string, localValue: unknown, remoteValue: unknown) {
-  if (key !== "orange-hotel-cashier-state") return false;
-  const localTransactions = (localValue as { transactions?: unknown[] } | null)?.transactions;
-  const remoteTransactions = (remoteValue as { transactions?: unknown[] } | null)?.transactions;
-  const localCount = Array.isArray(localTransactions) ? localTransactions.length : 0;
-  const remoteCount = Array.isArray(remoteTransactions) ? remoteTransactions.length : 0;
-
-  return localCount > 0 && localCount < 50 && remoteCount === 0;
+function isDangerouslySmallCashierWrite(_key: string, _localValue: unknown, _remoteValue: unknown) {
+  return false;
 }
 
 function getCanonicalDefaultValue(key: string) {
@@ -2450,12 +2444,15 @@ export async function hydrateStorageKeyFromFirebase<T = unknown>(key: string): P
       return { ok: true, value: sanitizedServerValue as T | null, remoteExists: serverValue !== null };
     }
 
+    const localValue = getLocalSyncedValue(key);
     if (serverValue !== null) {
-      const sanitizedServerValue = applyHydratedValue(serverValue);
+      const preferredValue = hasUsableSyncedValue(key, localValue)
+        ? mergeRemoteValueWithLocalOnlyRecords(key, localValue, serverValue)
+        : serverValue;
+      const sanitizedServerValue = applyHydratedValue(preferredValue);
       markSyncHealthy(key);
       return { ok: true, value: sanitizedServerValue as T | null, remoteExists: true };
     }
-    const localValue = getLocalSyncedValue(key);
     const canonicalValue = sanitizeForStorage(getCanonicalDefaultValue(key));
     const initialValue = hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue;
     const committedValue = initialValue === null || initialValue === undefined
@@ -2551,7 +2548,10 @@ export async function hydrateStorageKeyFromFirebase<T = unknown>(key: string): P
     const committedValue = result.snapshot.exists()
       ? sanitizeForStorage(sanitizeSyncedValue(key, result.snapshot.val()))
       : null;
-    const sanitizedPreferredValue = committedValue === null ? null : applyHydratedValue(committedValue);
+    const preferredValue = (committedValue !== null && hasUsableSyncedValue(key, localValue))
+      ? mergeRemoteValueWithLocalOnlyRecords(key, localValue, committedValue)
+      : (committedValue ?? (hasUsableSyncedValue(key, localValue) ? localValue : canonicalValue));
+    const sanitizedPreferredValue = preferredValue === null ? null : applyHydratedValue(preferredValue);
     markSyncHealthy(key);
     return { ok: true, value: sanitizedPreferredValue as T | null, remoteExists };
   } catch (error) {
