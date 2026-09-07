@@ -47,6 +47,7 @@ interface BookingRecord {
   total: number;
   status: TransactionStatus;
   paymentBreakdown?: BookingPaymentBreakdownItem[];
+  wasCredit?: boolean;
 }
 
 interface KitchenPaymentRecord {
@@ -350,6 +351,7 @@ export default function PaymentsPage() {
               ...tx,
               status: tx.status === "checked-out" ? "checked-out" as const : "completed" as const,
               payment: mappedMethod,
+              wasCredit: tx.wasCredit || tx.status === "credit" || tx.payment === "credit",
             }
           : tx,
       );

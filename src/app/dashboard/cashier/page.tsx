@@ -58,6 +58,7 @@ interface BookingRecord {
   extensionPaymentMethod?: PaymentMethod;
   extensionAmount?: number;
   lastExtendedAt?: number;
+  wasCredit?: boolean;
 }
 
 function getFallbackRoomRate(roomType: RoomType): number {
@@ -159,6 +160,15 @@ function isOverstay(record: BookingRecord): boolean {
   return Date.now() > checkoutAt.getTime();
 }
 
+function hasCreditHistory(record: BookingRecord): boolean {
+  return Boolean(
+    record.wasCredit ||
+      record.status === "credit" ||
+      record.payment === "credit" ||
+      record.extensionPaymentMethod === "credit",
+  );
+}
+
 function toAccountingCurrency(currency: BookingCurrency): BookingCurrency {
   return currency === "$" ? "TSh" : currency;
 }
@@ -218,6 +228,7 @@ export default function BookingPage() {
           ...tx,
           status: tx.status === "credit" || tx.status === "checked-out" ? tx.status : "completed",
           checkedBy: tx.checkedBy || (tx.id.startsWith("hist-") ? tx.checkedBy : "Default"),
+          wasCredit: hasCreditHistory(tx),
         }));
       setTransactions(normalizedTransactions);
       setReceiptSeq(snapshot.receiptSeq);
@@ -305,7 +316,7 @@ export default function BookingPage() {
     [transactions],
   );
   const creditTransactions = useMemo(
-    () => transactions.filter((tx) => tx.status === "credit"),
+    () => transactions.filter(hasCreditHistory),
     [transactions],
   );
   const visibleTransactions = useMemo(() => {
@@ -485,6 +496,7 @@ export default function BookingPage() {
               nights,
               total,
               status,
+              wasCredit: entry.wasCredit || status === "credit",
               checkedBy: localStorage.getItem("orange-hotel-username") || "Reception",
             }
           : entry,
@@ -520,6 +532,7 @@ export default function BookingPage() {
       nights,
       total,
       status,
+      wasCredit: status === "credit",
       checkedBy: localStorage.getItem("orange-hotel-username") || "Reception",
     };
     if (selectedPackage !== "none") {
@@ -659,6 +672,7 @@ export default function BookingPage() {
             extensionPaymentMethod: paymentMethod,
             extensionAmount: extendIncrement,
             lastExtendedAt: Date.now(),
+            wasCredit: entry.wasCredit || paymentMethod === "credit",
           }
         : entry,
     );
