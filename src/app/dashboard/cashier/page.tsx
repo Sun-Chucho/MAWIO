@@ -321,7 +321,11 @@ export default function BookingPage() {
   );
   const visibleTransactions = useMemo(() => {
     const source = transactionTab === "completed" ? completedTransactions : creditTransactions;
-    return source.filter((tx) => matchesBookingDateFilter(tx.createdAt, bookingDateFilter));
+    // Credit is a complete history view. Date filters are only intended for
+    // completed bookings and previously made the credit tab look incomplete.
+    return transactionTab === "credit"
+      ? source
+      : source.filter((tx) => matchesBookingDateFilter(tx.createdAt, bookingDateFilter));
   }, [bookingDateFilter, completedTransactions, creditTransactions, transactionTab]);
   const activeBookedRoomNumbers = useMemo(
     () =>
@@ -891,17 +895,23 @@ export default function BookingPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <CardTitle className="text-xl font-black uppercase tracking-tight">Booked Rooms</CardTitle>
-              <CardDescription>Completed and credit booking records filtered by payment date</CardDescription>
+              <CardDescription>
+                {transactionTab === "credit"
+                  ? "All credit booking records"
+                  : "Completed booking records filtered by payment date"}
+              </CardDescription>
             </div>
             <div className="flex flex-col gap-2 md:flex-row md:items-center">
-              <Tabs value={bookingDateFilter} onValueChange={(value) => setBookingDateFilter(value as BookingDateFilter)}>
-                <TabsList className="grid h-10 grid-cols-4">
-                  <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>
-                  <TabsTrigger value="day" className="text-[10px] font-black uppercase tracking-widest">Day</TabsTrigger>
-                  <TabsTrigger value="week" className="text-[10px] font-black uppercase tracking-widest">Week</TabsTrigger>
-                  <TabsTrigger value="month" className="text-[10px] font-black uppercase tracking-widest">Month</TabsTrigger>
-                </TabsList>
-              </Tabs>
+              {transactionTab === "completed" && (
+                <Tabs value={bookingDateFilter} onValueChange={(value) => setBookingDateFilter(value as BookingDateFilter)}>
+                  <TabsList className="grid h-10 grid-cols-4">
+                    <TabsTrigger value="all" className="text-[10px] font-black uppercase tracking-widest">All</TabsTrigger>
+                    <TabsTrigger value="day" className="text-[10px] font-black uppercase tracking-widest">Day</TabsTrigger>
+                    <TabsTrigger value="week" className="text-[10px] font-black uppercase tracking-widest">Week</TabsTrigger>
+                    <TabsTrigger value="month" className="text-[10px] font-black uppercase tracking-widest">Month</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              )}
               <Tabs value={transactionTab} onValueChange={(value) => setTransactionTab(value as TransactionTab)}>
                 <TabsList className="h-10">
                   <TabsTrigger value="completed" className="text-[10px] font-black uppercase tracking-widest">Completed Transactions</TabsTrigger>
