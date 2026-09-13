@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { RoleLoginPage } from "@/components/auth/role-login-page";
+import { MdEntryPage } from "@/components/auth/md-entry-page";
 
 export const metadata: Metadata = {
   title: "MAWIO MD Dashboard",
@@ -34,5 +34,5 @@ export const viewport: Viewport = {
 };
 
 export default function ManagingDirectorEntryPage() {
-  return <RoleLoginPage role="director" />;
+  return <MdEntryPage />;
 }

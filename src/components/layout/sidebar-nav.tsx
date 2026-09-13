@@ -70,7 +70,7 @@ const ROLE_NAV_PRIORITY: Partial<Record<Role, string[]>> = {
 export function SidebarNav({ role }: { role: Role }) {
   const pathname = usePathname();
   const router = useRouter();
-  const logoutPath = role === "director" ? "/MD" : "/";
+  const logoutPath = role === "director" ? "/md" : "/";
   
   const handleNavigate = () => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {

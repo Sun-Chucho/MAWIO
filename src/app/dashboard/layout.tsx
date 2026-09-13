@@ -1261,7 +1261,7 @@ export default function DashboardLayout({
               aria-label="Toggle sidebar"
               className={cn(
                 "h-9 w-9 rounded-md border border-input flex items-center justify-center hover:bg-muted transition-colors",
-                isDirector && "shrink-0 border-white/15 bg-white/10 hover:bg-white/15 md:border-input md:bg-transparent md:hover:bg-muted",
+                isDirector && "h-11 w-11 shrink-0 border-white/15 bg-white/10 hover:bg-white/15 md:h-9 md:w-9 md:border-input md:bg-transparent md:hover:bg-muted",
               )}
             >
               <Menu className="w-4 h-4" />
@@ -1287,7 +1287,7 @@ export default function DashboardLayout({
                 <Clock className="w-3 h-3 mr-1" /> {shift}
               </Badge>
             )}
-            <Badge variant="outline" className="border-blue-500 bg-blue-50 px-2 text-[10px] font-black uppercase tracking-widest text-blue-600">
+            <Badge variant="outline" className={cn("border-blue-500 bg-blue-50 px-2 text-[10px] font-black uppercase tracking-widest text-blue-600", isDirector && "hidden md:inline-flex")}>
               MAWIO Standard
             </Badge>
             
