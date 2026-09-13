@@ -3,7 +3,7 @@ import { MdEntryPage } from "@/components/auth/md-entry-page";
 
 export const metadata: Metadata = {
   title: "MAWIO MD Dashboard",
-  description: "Managing director mobile dashboard login for MAWIO.",
+  description: "Managing director dashboard entry for MAWIO.",
   manifest: "/md-manifest.webmanifest",
   icons: {
     icon: [
@@ -15,14 +15,14 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: "Orange MD",
+    title: "MAWIO MD",
     statusBarStyle: "black-translucent",
   },
   other: {
     "mobile-web-app-capable": "yes",
     "apple-mobile-web-app-capable": "yes",
-    "apple-mobile-web-app-title": "Orange MD",
-    "application-name": "Orange MD",
+    "apple-mobile-web-app-title": "MAWIO MD",
+    "application-name": "MAWIO MD",
   },
 };
 
