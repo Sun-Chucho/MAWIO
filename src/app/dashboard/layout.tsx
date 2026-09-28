@@ -1268,7 +1268,7 @@ export default function DashboardLayout({
             </button>
             {isDirector && (
               <div className="min-w-0 text-left md:hidden">
-                <p className="truncate text-[10px] font-black uppercase tracking-[0.22em] text-emerald-200/80">Orange MD</p>
+                <p className="truncate text-[10px] font-black uppercase tracking-[0.22em] text-emerald-200/80">MAWIO MD</p>
                 <p className="truncate text-sm font-black uppercase tracking-tight">{directorCurrentLabel}</p>
               </div>
             )}

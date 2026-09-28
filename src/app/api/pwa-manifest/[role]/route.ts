@@ -12,7 +12,7 @@ const ROLE_MANIFESTS = {
   },
   director: {
     name: "MAWIO MD Dashboard",
-    short_name: "Orange MD",
+    short_name: "MAWIO MD",
     start_url: "/MD?source=pwa",
     scope: "/",
     id: "/mawio-md-dashboard",

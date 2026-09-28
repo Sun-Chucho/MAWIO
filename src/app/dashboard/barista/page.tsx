@@ -3242,13 +3242,13 @@ export default function BaristaPage() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <Card className="border-none shadow-sm">
             <CardContent className="p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista Orange Capital</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista MAWIO Capital</p>
               <p className="mt-2 text-2xl font-black">TSh {baristaCapitalTotal.toLocaleString()}</p>
             </CardContent>
           </Card>
           <Card className="border-none shadow-sm">
             <CardContent className="p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista Orange Revenue</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista MAWIO Revenue</p>
               <p className="mt-2 text-2xl font-black">TSh {totalBaristaRevenue.toLocaleString()}</p>
             </CardContent>
           </Card>
@@ -3402,13 +3402,13 @@ export default function BaristaPage() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <Card className="border-none shadow-sm">
             <CardContent className="p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista Orange Capital</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista MAWIO Capital</p>
               <p className="mt-2 text-2xl font-black">TSh {baristaCapitalTotal.toLocaleString()}</p>
             </CardContent>
           </Card>
           <Card className="border-none shadow-sm">
             <CardContent className="p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista Orange Revenue</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Barista MAWIO Revenue</p>
               <p className="mt-2 text-2xl font-black">TSh {totalBaristaRevenue.toLocaleString()}</p>
             </CardContent>
           </Card>
