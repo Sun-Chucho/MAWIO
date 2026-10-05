@@ -35,8 +35,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, Eye, Pencil, Plus, Search, Trash2, XCircle } from "lucide-react";
 import { useIsDirector } from "@/hooks/use-is-director";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
-import { commitBaristaCatalogAndStockMutation, commitPosCatalogMutation, commitStockArraysAtomically, commitSyncedStorageValueAndWait, getPosPaymentSyncKey, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
+import { commitBaristaCatalogAndStockMutation, commitBaristaVoidWithStock, commitPosCatalogMutation, commitStockArraysAtomically, getPosPaymentSyncKey, hydrateStorageKeyFromFirebase, subscribeToSyncedStorageKey } from "@/app/lib/firebase-sync";
 import { buildInitialBaristaMenuItems, getBaristaMenuLabel, getMenuBaseLabel } from "@/app/lib/barista-stock";
+import { prepareBaristaStockMutation } from "@/app/lib/barista-stock-mutation";
 import { KitchenSessionManager } from "@/components/dashboard/kitchen-session-manager";
 import { toast } from "@/hooks/use-toast";
 
@@ -56,6 +57,8 @@ type ItemCategory = "Kitchen" | "Bar";
 
 interface PosPaymentLine {
   itemId?: string;
+  inventoryItemId?: string;
+  storeItemId?: string;
   name: string;
   qty: number;
   unitPrice?: number;
@@ -870,17 +873,21 @@ export function InventoryControlView({
 
     const approved = await confirm({
       title: "Delete Barista Sale",
-      description: `Delete sale ${payment.code ?? "-"} for TSh ${getNumber(payment.total).toLocaleString()}? This permanently removes the full sale and updates the sales totals.`,
+      description: `Delete sale ${payment.code ?? "-"} for TSh ${getNumber(payment.total).toLocaleString()}? This removes the sale from finance reports and restores stock when it came from a current POS order.`,
       actionLabel: "Delete Sale",
     });
     if (!approved) return;
 
     setDeletingBaristaPaymentKey(paymentKey);
     try {
-      const hydrated = await hydrateSharedWriteState([STORAGE_BARISTA_STATE], "The Barista sale deletion");
+      const hydrated = await hydrateSharedWriteState(
+        [STORAGE_BARISTA_STATE, STORAGE_MAIN_STORE_ITEMS, STORAGE_INVENTORY_ITEMS],
+        "The Barista sale deletion",
+      );
       if (!hydrated) return;
 
       const baristaState = readJson<PosStateSnapshot>(STORAGE_BARISTA_STATE);
+      if (!baristaState) throw new Error("Shared Barista state is unavailable");
       const currentPayments = Array.isArray(baristaState?.payments) ? baristaState.payments : [];
       const currentPaymentIndex = currentPayments.findIndex((entry) => getPosPaymentSyncKey(entry) === paymentKey);
       const currentPayment = currentPaymentIndex >= 0 ? currentPayments[currentPaymentIndex] : undefined;
@@ -890,40 +897,56 @@ export function InventoryControlView({
         return;
       }
 
-      const currentTickets = Array.isArray(baristaState?.tickets) ? baristaState.tickets : [];
-      if (currentPayment.stockRequired !== false) {
+      const linkedTicket = (baristaState.tickets ?? []).find((ticket) =>
+        typeof ticket === "object" && ticket !== null &&
+        (ticket as { id?: string }).id === currentPayment.ticketId) as { lines?: PosPaymentLine[] } | undefined;
+      const sourceStockApplicationId = currentPayment.id?.startsWith("bp-")
+        ? currentPayment.id.slice(3)
+        : currentPayment.ticketId?.startsWith("bt-")
+          ? currentPayment.ticketId.slice(3)
+          : currentPayment.ticketId ?? currentPayment.id ?? paymentKey;
+      const voidLines = currentPayment.stockRequired === false
+        ? []
+        : Array.isArray(linkedTicket?.lines) && linkedTicket.lines.length > 0
+          ? linkedTicket.lines
+          : Array.isArray(currentPayment.lines)
+            ? currentPayment.lines
+            : [];
+      const stockCandidate = prepareBaristaStockMutation(
+        voidLines,
+        "restore",
+        `compensate:${sourceStockApplicationId}`,
+        sourceStockApplicationId,
+      );
+      if (!stockCandidate.ok) {
+        toast({ title: "Barista sale was not deleted", description: stockCandidate.error, variant: "destructive" });
+        return;
+      }
+
+      const deletedPaymentKeys = Array.from(new Set([...(baristaState?.deletedPaymentKeys ?? []), paymentKey]));
+      const deletedTicketIds = currentPayment.ticketId
+        ? Array.from(new Set([...(baristaState?.deletedTicketIds ?? []), currentPayment.ticketId]))
+        : baristaState?.deletedTicketIds ?? [];
+      const voidResult = await commitBaristaVoidWithStock(
+        baristaState,
+        [],
+        deletedPaymentKeys,
+        deletedTicketIds,
+        stockCandidate.storeItems,
+        stockCandidate.inventoryItems,
+        stockCandidate.appliedEffects,
+      );
+      if (!voidResult.ok) {
         toast({
-          title: "Delete from Barista Manager sales",
-          description: "This current POS sale has consumed stock. Open the Barista Manager sales view and delete it there so the ticket, tombstones, and stock restoration are confirmed together.",
+          title: "Barista sale was not deleted",
+          description: voidResult.reason === "stock-conflict"
+            ? "Stock changed while this sale was being deleted. Refresh and try again."
+            : "The shared sale deletion could not be confirmed. Reconnect and try again.",
           variant: "destructive",
         });
         return;
       }
-
-      const nextPayments = [...currentPayments];
-      nextPayments.splice(currentPaymentIndex, 1);
-      const deletedPaymentKeys = Array.from(new Set([...(baristaState?.deletedPaymentKeys ?? []), paymentKey]));
-      const nextTickets = currentPayment.ticketId
-        ? currentTickets.filter((ticket) =>
-            typeof ticket !== "object" ||
-            ticket === null ||
-            (ticket as { id?: unknown }).id !== currentPayment.ticketId)
-        : currentTickets;
-      const deletedTicketIds = currentPayment.ticketId
-        ? Array.from(new Set([...(baristaState?.deletedTicketIds ?? []), currentPayment.ticketId]))
-        : baristaState?.deletedTicketIds ?? [];
-      const committedState = await commitSyncedStorageValueAndWait(STORAGE_BARISTA_STATE, {
-        ...baristaState,
-        tickets: nextTickets,
-        ticketSeq: Number.isFinite(baristaState?.ticketSeq) ? Number(baristaState?.ticketSeq) : 490,
-        payments: nextPayments,
-        menuItems: Array.isArray(baristaState?.menuItems) ? baristaState.menuItems : [],
-        catalogRevision: Number.isFinite(baristaState?.catalogRevision) ? Number(baristaState?.catalogRevision) : 0,
-        queueResetAt: Number.isFinite(baristaState?.queueResetAt) ? Number(baristaState?.queueResetAt) : 0,
-        deletedPaymentKeys,
-        deletedTicketIds,
-      });
-      setBaristaPayments(committedState.payments);
+      setBaristaPayments(voidResult.value.payments ?? []);
       toast({ title: "Barista sale deleted", description: `${currentPayment.code ?? "Sale"} was removed and the totals were updated.` });
     } catch {
       toast({
