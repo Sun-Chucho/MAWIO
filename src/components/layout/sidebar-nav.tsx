@@ -57,7 +57,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Barista Stock', href: '/dashboard/barista', icon: Package, roles: ['director'] },
   { label: 'Cancelled', href: '/dashboard/cancelled', icon: XCircle, roles: ['kitchen', 'barista'] },
   { label: 'Staff', href: '/dashboard/staff', icon: Users, roles: ['manager', 'director'] },
-  { label: 'Analytics', href: '/dashboard/analytics', icon: BarChart3, roles: ['director'] },
+  { label: 'Reports', href: '/dashboard/analytics', icon: BarChart3, roles: ['manager', 'director'] },
   { label: 'Settings', href: '/dashboard/settings/password', icon: Settings, roles: ['manager', 'director', 'inventory', 'cashier', 'kitchen', 'barista'] },
 ];
 

@@ -91,7 +91,7 @@ export default function LaundryPage() {
     return subscribeToSyncedStorageKey(STORAGE_LAUNDRY_RECORDS, refreshLaundry);
   }, []);
 
-  const isReadOnly = role === "manager" || role === "director";
+  const isReadOnly = role === "director";
   const filteredRecords = useMemo(
     () => records.filter((record) => record.status === tab).sort((a, b) => b.createdAt - a.createdAt),
     [records, tab],
@@ -162,7 +162,7 @@ export default function LaundryPage() {
       {!isReadOnly && (
         <Card className="shadow-sm">
           <CardHeader className="border-b">
-            <CardTitle className="text-lg font-black uppercase tracking-tight">New Laundry Income</CardTitle>
+            <CardTitle className="text-lg font-black uppercase tracking-tight">Enter Laundry Sales</CardTitle>
             <CardDescription>Enter client, item count, amount, status, and method of payment.</CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 pt-4 md:grid-cols-2">

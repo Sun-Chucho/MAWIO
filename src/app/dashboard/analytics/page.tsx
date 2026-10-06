@@ -39,8 +39,9 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EXPENSE_DEPARTMENTS, ExpenseRecord, getExpenseAmountTypeLabel, STORAGE_EXPENSES } from "@/app/lib/expenses";
 import { LaundryRecord, STORAGE_LAUNDRY_RECORDS } from "@/app/lib/laundry";
+import { getDefaultRooms } from "@/app/lib/rooms-storage";
 
-type ReportRange = "daily" | "weekly" | "monthly" | "all-time";
+type ReportRange = "daily" | "weekly" | "monthly" | "custom" | "all-time";
 
 type BookingTransaction = {
   createdAt?: number;
@@ -98,6 +99,12 @@ function toMonthKey(timestamp: number) {
   return `${year}-${month}`;
 }
 
+function effectiveDateTimestamp(dateText: string | undefined, fallback: number) {
+  if (!dateText || !/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return fallback;
+  const parsed = new Date(`${dateText}T12:00:00`).getTime();
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function formatMonthLabel(monthKey: string) {
   return new Date(`${monthKey}-01T00:00:00`).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
@@ -140,6 +147,9 @@ function calculateGrowth(current: number, previous: number) {
 
 export default function AnalyticsPage() {
   const [range, setRange] = useState<ReportRange>("daily");
+  const [view, setView] = useState<"analytics" | "reports">("analytics");
+  const [customStart, setCustomStart] = useState(() => toDayKey(Date.now()));
+  const [customEnd, setCustomEnd] = useState(() => toDayKey(Date.now()));
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [bookings, setBookings] = useState<BookingTransaction[]>([]);
   const [kitchenPayments, setKitchenPayments] = useState<PosPaymentRecord[]>([]);
@@ -225,24 +235,24 @@ export default function AnalyticsPage() {
 
     laundryRecords.forEach((record) => {
       if (record.status === "credit" || !record.createdAt || !record.totalAmount) return;
-      events.push({ date: toDayKey(record.createdAt), timestamp: record.createdAt, source: "laundry", total: record.totalAmount });
+      const timestamp = effectiveDateTimestamp(record.bookingDate, record.createdAt);
+      events.push({ date: toDayKey(timestamp), timestamp, source: "laundry", total: record.totalAmount });
     });
 
     expenses.forEach((expense) => {
       if (!expense.createdAt || !expense.amount) return;
-      events.push({ date: toDayKey(expense.createdAt), timestamp: expense.createdAt, source: "expense", total: expense.amount });
+      const timestamp = effectiveDateTimestamp(expense.expenseDate, expense.createdAt);
+      events.push({ date: toDayKey(timestamp), timestamp, source: "expense", total: expense.amount });
     });
 
     return events;
   }, [baristaPayments, bookings, expenses, kitchenPayments, laundryRecords]);
 
-  const revenueEvents = useMemo(() => businessEvents.filter((event) => event.source !== "expense"), [businessEvents]);
-
   const availableMonths = useMemo(() => {
-    const monthKeys = Array.from(new Set(revenueEvents.map((event) => toMonthKey(event.timestamp))));
+    const monthKeys = Array.from(new Set(businessEvents.map((event) => toMonthKey(event.timestamp))));
     if (monthKeys.length === 0) monthKeys.push(toMonthKey(Date.now()));
     return monthKeys.sort((a, b) => b.localeCompare(a));
-  }, [revenueEvents]);
+  }, [businessEvents]);
 
   useEffect(() => {
     if (!selectedMonth || !availableMonths.includes(selectedMonth)) {
@@ -254,8 +264,9 @@ export default function AnalyticsPage() {
     if (range === "daily") return "Today";
     if (range === "weekly") return "Last 7 Days";
     if (range === "monthly") return formatMonthLabel(selectedMonth || availableMonths[0] || toMonthKey(Date.now()));
+    if (range === "custom") return `${customStart} to ${customEnd}`;
     return "All Time";
-  }, [availableMonths, range, selectedMonth]);
+  }, [availableMonths, customEnd, customStart, range, selectedMonth]);
 
   const history = useMemo<RevenueHistoryRow[]>(() => {
     const keys =
@@ -265,6 +276,18 @@ export default function AnalyticsPage() {
           ? createRecentDayKeys(7)
           : range === "monthly"
             ? createMonthDayKeys(selectedMonth || availableMonths[0] || toMonthKey(Date.now()))
+            : range === "custom"
+              ? (() => {
+                  const start = new Date(`${customStart}T00:00:00`);
+                  const end = new Date(`${customEnd}T00:00:00`);
+                  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return [];
+                  const days = Math.min(366, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+                  return Array.from({ length: days }, (_, index) => {
+                    const date = new Date(start);
+                    date.setDate(start.getDate() + index);
+                    return toDayKey(date.getTime());
+                  });
+                })()
             : availableMonths.slice().reverse();
 
     const rows = new Map<string, RevenueHistoryRow>(
@@ -298,7 +321,7 @@ export default function AnalyticsPage() {
     });
 
     return keys.map((key) => rows.get(key)!);
-  }, [availableMonths, businessEvents, range, selectedMonth]);
+  }, [availableMonths, businessEvents, customEnd, customStart, range, selectedMonth]);
 
   const totals = useMemo(() => {
     const totalRevenue = history.reduce((sum, day) => sum + day.totalRevenue, 0);
@@ -336,7 +359,8 @@ export default function AnalyticsPage() {
   const periodExpenses = useMemo(
     () =>
       expenses.filter((expense) => {
-        const key = range === "all-time" ? toMonthKey(expense.createdAt) : toDayKey(expense.createdAt);
+        const timestamp = effectiveDateTimestamp(expense.expenseDate, expense.createdAt);
+        const key = range === "all-time" ? toMonthKey(timestamp) : toDayKey(timestamp);
         return activePeriodKeys.has(key);
       }),
     [activePeriodKeys, expenses, range],
@@ -344,6 +368,7 @@ export default function AnalyticsPage() {
 
   const growth = useMemo(() => {
     if (range === "all-time") return "All";
+    if (history.length === 0) return "0%";
     const split = history.length;
     const previousKeys = history.map((row) => row.date);
     const oldest = new Date(`${previousKeys[0]}T00:00:00`);
@@ -374,9 +399,14 @@ export default function AnalyticsPage() {
         previousTotal += payment.total;
       }
     });
+    laundryRecords.forEach((record) => {
+      if (record.status !== "credit" && record.createdAt && previousRows.includes(toDayKey(effectiveDateTimestamp(record.bookingDate, record.createdAt)))) {
+        previousTotal += record.totalAmount || 0;
+      }
+    });
 
     return calculateGrowth(currentTotal, previousTotal);
-  }, [baristaPayments, bookings, history, kitchenPayments, range]);
+  }, [baristaPayments, bookings, history, kitchenPayments, laundryRecords, range]);
 
   const pieData = useMemo(
     () => [
@@ -388,14 +418,13 @@ export default function AnalyticsPage() {
     [totals.baristaRevenue, totals.kitchenRevenue, totals.laundryRevenue, totals.roomRevenue],
   );
 
-  const creditExposure = useMemo(
-    () =>
-      bookings.filter((booking) => booking.status === "credit").reduce((sum, booking) => sum + (booking.total ?? 0), 0) +
-      kitchenPayments.filter((payment) => payment.status === "credit").reduce((sum, payment) => sum + (payment.total ?? 0), 0) +
-      baristaPayments.filter((payment) => payment.status === "credit").reduce((sum, payment) => sum + (payment.total ?? 0), 0) +
-      laundryRecords.filter((record) => record.status === "credit").reduce((sum, record) => sum + (record.totalAmount ?? 0), 0),
-    [baristaPayments, bookings, kitchenPayments, laundryRecords],
-  );
+  const creditExposure = useMemo(() => {
+    const inPeriod = (timestamp?: number) => Boolean(timestamp && activePeriodKeys.has(range === "all-time" ? toMonthKey(timestamp) : toDayKey(timestamp)));
+    return bookings.filter((booking) => booking.status === "credit" && inPeriod(booking.createdAt)).reduce((sum, booking) => sum + (booking.total ?? 0), 0) +
+      kitchenPayments.filter((payment) => payment.status === "credit" && inPeriod(payment.createdAt)).reduce((sum, payment) => sum + (payment.total ?? 0), 0) +
+      baristaPayments.filter((payment) => payment.status === "credit" && inPeriod(payment.createdAt)).reduce((sum, payment) => sum + (payment.total ?? 0), 0) +
+      laundryRecords.filter((record) => record.status === "credit" && inPeriod(effectiveDateTimestamp(record.bookingDate, record.createdAt))).reduce((sum, record) => sum + (record.totalAmount ?? 0), 0);
+  }, [activePeriodKeys, baristaPayments, bookings, kitchenPayments, laundryRecords, range]);
 
   const expenseMixData = useMemo(
     () =>
@@ -446,6 +475,53 @@ export default function AnalyticsPage() {
     [activeReportLabel, creditExposure, growth, range, totals.avgDaily, totals.bookingFreq, totals.expensesTotal, totals.laundryRevenue, totals.netRevenue, totals.totalGuests],
   );
 
+  const statementExpenses = useMemo(() => {
+    const amountFor = (predicate: (expense: ExpenseRecord) => boolean) =>
+      periodExpenses.filter(predicate).reduce((sum, expense) => sum + expense.amount, 0);
+    const named = (pattern: RegExp) => (expense: ExpenseRecord) => pattern.test(`${expense.title} ${expense.notes ?? ""}`);
+    const utilityRows = [
+      { label: "TV / Internet", pattern: /\b(tv|internet|wifi|wi-fi|cable)\b/i },
+      { label: "Electricity", pattern: /\b(electric|power|luku)\b/i },
+      { label: "Generator / Fuel", pattern: /\b(generator|fuel|diesel|petrol)\b/i },
+    ];
+    const utilityMatchers = utilityRows.map((row) => named(row.pattern));
+    return [
+      { label: "Kitchen", value: amountFor((expense) => expense.department === "kitchen") },
+      { label: "Barista", value: amountFor((expense) => expense.department === "barista") },
+      { label: "Salary & Allowances", value: amountFor((expense) => expense.department === "staff-salary-allowance") },
+      ...utilityRows.map((row) => ({ label: row.label, value: amountFor((expense) => expense.department === "utilities-government" && named(row.pattern)(expense)) })),
+      { label: "Staff Food", value: amountFor((expense) => expense.department === "staff-food") },
+      { label: "Office & Administration", value: amountFor((expense) => expense.department === "office") },
+      { label: "Rooms", value: amountFor((expense) => expense.department === "rooms") },
+      { label: "Managing Director", value: amountFor((expense) => expense.department === "managing-director") },
+      { label: "Maintenance", value: amountFor((expense) => expense.department === "others") },
+      { label: "Other Utilities & Government", value: amountFor((expense) => expense.department === "utilities-government" && !utilityMatchers.some((matches) => matches(expense))) },
+    ];
+  }, [periodExpenses]);
+
+  const statementSections = [
+    { heading: "Capacity", rows: [
+      { label: "Total Rooms", value: getDefaultRooms().length.toLocaleString() },
+      { label: "Rooms Sold", value: totals.totalGuests.toLocaleString() },
+    ] },
+    { heading: "Revenue", rows: [
+      { label: "Room Sales", value: `TSh ${totals.roomRevenue.toLocaleString()}` },
+      { label: "Kitchen", value: `TSh ${totals.kitchenRevenue.toLocaleString()}` },
+      { label: "Bar", value: `TSh ${totals.baristaRevenue.toLocaleString()}` },
+      { label: "Laundry", value: `TSh ${totals.laundryRevenue.toLocaleString()}` },
+      { label: "Conference", value: "TSh 0" },
+      { label: "Total Revenue", value: `TSh ${totals.totalRevenue.toLocaleString()}`, strong: true },
+    ] },
+    { heading: "Operating Expenses", rows: [
+      ...statementExpenses.map((expense) => ({ label: expense.label, value: `TSh ${expense.value.toLocaleString()}` })),
+      { label: "Total Expenses", value: `TSh ${totals.expensesTotal.toLocaleString()}`, strong: true },
+    ] },
+    { heading: "Profit Position", rows: [
+      { label: "Net Revenue", value: `TSh ${totals.netRevenue.toLocaleString()}`, strong: true },
+      { label: "Credit Exposure", value: `TSh ${creditExposure.toLocaleString()}` },
+    ] },
+  ];
+
   const fnbControlMetrics = useMemo(() => {
     const beverageRevenue = beverageRows.reduce((sum, row) => sum + row.salesRevenue, 0);
     const beverageCogs = beverageRows.reduce((sum, row) => {
@@ -488,6 +564,7 @@ export default function AnalyticsPage() {
       expenseMixData,
       expenseTypeData,
       aspectRows,
+      statementSections,
       fnbControlMetrics,
     };
 
@@ -508,8 +585,8 @@ export default function AnalyticsPage() {
             <BarChart3 className="w-7 h-7 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-black tracking-tight uppercase md:text-3xl">MD Reports</h1>
-            <p className="text-muted-foreground text-sm uppercase font-bold tracking-wider">Daily, weekly, monthly, and all-time business reports</p>
+            <h1 className="text-2xl font-black tracking-tight uppercase md:text-3xl">Management Analytics &amp; Reports</h1>
+            <p className="text-muted-foreground text-sm uppercase font-bold tracking-wider">Live performance and financial statements from recorded system data</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -518,6 +595,7 @@ export default function AnalyticsPage() {
               <TabsTrigger value="daily" className="text-[10px] font-black uppercase tracking-widest">Daily</TabsTrigger>
               <TabsTrigger value="weekly" className="text-[10px] font-black uppercase tracking-widest">Weekly</TabsTrigger>
               <TabsTrigger value="monthly" className="text-[10px] font-black uppercase tracking-widest">Monthly</TabsTrigger>
+              <TabsTrigger value="custom" className="text-[10px] font-black uppercase tracking-widest">Custom</TabsTrigger>
               <TabsTrigger value="all-time" className="text-[10px] font-black uppercase tracking-widest">All Time</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -526,6 +604,22 @@ export default function AnalyticsPage() {
           </Button>
         </div>
       </header>
+
+      <div className="inline-flex rounded-xl bg-muted p-1" role="tablist" aria-label="Report view">
+        {(["analytics", "reports"] as const).map((option) => (
+          <button key={option} type="button" role="tab" aria-selected={view === option} onClick={() => setView(option)}
+            className={`min-w-32 rounded-lg px-5 py-2 text-sm font-black uppercase tracking-widest ${view === option ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>
+            {option}
+          </button>
+        ))}
+      </div>
+
+      {range === "custom" && (
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-white p-4">
+          <label className="space-y-1 text-xs font-bold uppercase">From<input aria-label="From date" type="date" value={customStart} max={customEnd} onChange={(event) => setCustomStart(event.target.value)} className="block h-10 rounded-md border px-3" /></label>
+          <label className="space-y-1 text-xs font-bold uppercase">To<input aria-label="To date" type="date" value={customEnd} min={customStart} onChange={(event) => setCustomEnd(event.target.value)} className="block h-10 rounded-md border px-3" /></label>
+        </div>
+      )}
 
       {range === "monthly" && (
         <Card className="rounded-lg border-none bg-white shadow-sm">
@@ -553,6 +647,7 @@ export default function AnalyticsPage() {
         </Card>
       )}
 
+      {view === "analytics" ? <>
       <Card className="rounded-lg border border-black/5 bg-white shadow-sm">
         <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -838,6 +933,24 @@ export default function AnalyticsPage() {
           </div>
         </CardContent>
       </Card>
+      </> : (
+        <section className="overflow-hidden rounded-xl border bg-white shadow-sm" aria-label="Financial statement">
+          <div className="bg-black px-6 py-5 text-white">
+            <h2 className="text-2xl font-black uppercase tracking-tight">Financial Statement</h2>
+            <p className="mt-1 text-sm font-bold uppercase text-white/60">{activeReportLabel} · TSh</p>
+          </div>
+          {statementSections.map((section) => (
+            <div key={section.heading}>
+              <h3 className="border-y bg-muted/70 px-6 py-4 text-xs font-black uppercase tracking-[0.2em]">{section.heading}</h3>
+              {section.rows.map((row) => (
+                <div key={row.label} className={`flex items-center justify-between gap-4 border-b px-6 py-3 text-sm ${"strong" in row && row.strong ? "bg-muted/20 font-black uppercase" : "font-medium"}`}>
+                  <span>{row.label}</span><span className="whitespace-nowrap text-right font-bold">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </section>
+      )}
     </div>
   );
 }
