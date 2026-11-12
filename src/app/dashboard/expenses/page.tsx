@@ -24,7 +24,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Save, WalletCards } from "lucide-react";
+import { Pencil, Save, WalletCards } from "lucide-react";
 
 function toDateInputValue(date = new Date()) {
   const year = date.getFullYear();
@@ -33,23 +33,22 @@ function toDateInputValue(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-function timestampForExpenseDate(value: string) {
+function timestampForExpenseDate(value: string, referenceDate = new Date()) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
 
-  const now = new Date();
   const timestamp = new Date(
     Number(match[1]),
     Number(match[2]) - 1,
     Number(match[3]),
-    now.getHours(),
-    now.getMinutes(),
-    now.getSeconds(),
-    now.getMilliseconds(),
+    referenceDate.getHours(),
+    referenceDate.getMinutes(),
+    referenceDate.getSeconds(),
+    referenceDate.getMilliseconds(),
   );
 
-  if (toDateInputValue(timestamp) !== value || timestamp.getTime() > Date.now()) return null;
-  return timestamp.getTime();
+  if (toDateInputValue(timestamp) !== value || value > toDateInputValue()) return null;
+  return Math.min(timestamp.getTime(), Date.now());
 }
 
 function formatDate(value: number) {
@@ -71,6 +70,13 @@ export default function ExpensesPage() {
   const [expenseDate, setExpenseDate] = useState(() => toDateInputValue());
   const [notes, setNotes] = useState("");
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
+  const [editDepartment, setEditDepartment] = useState<ExpenseDepartment>("kitchen");
+  const [editTitle, setEditTitle] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editAmountType, setEditAmountType] = useState<ExpenseAmountType>("cash");
+  const [editDate, setEditDate] = useState("");
+  const [editNotes, setEditNotes] = useState("");
   const [movingExpense, setMovingExpense] = useState<ExpenseRecord | null>(null);
   const [moveTarget, setMoveTarget] = useState<ExpenseDepartment>("kitchen");
 
@@ -128,7 +134,8 @@ export default function ExpensesPage() {
       payoutStatus: role === "manager" ? "approved" : undefined,
     };
 
-    const nextExpenses = [nextExpense, ...expenses];
+    const currentExpenses = readJson<ExpenseRecord[]>(STORAGE_EXPENSES);
+    const nextExpenses = [nextExpense, ...(Array.isArray(currentExpenses) ? currentExpenses : expenses)];
     setExpenses(nextExpenses);
     writeJson(STORAGE_EXPENSES, nextExpenses);
     setTitle("");
@@ -145,11 +152,42 @@ export default function ExpensesPage() {
     setMoveTarget(fallbackTarget);
   };
 
+  const openEditDialog = (expense: ExpenseRecord) => {
+    if (isDirector) return;
+    setEditingExpense(expense);
+    setEditDepartment(expense.department);
+    setEditTitle(expense.title);
+    setEditAmount(String(expense.amount));
+    setEditAmountType(expense.amountType);
+    setEditDate(expense.expenseDate ?? toDateInputValue(new Date(expense.createdAt)));
+    setEditNotes(expense.notes ?? "");
+  };
+
+  const updateExpense = () => {
+    if (isDirector || !editingExpense) return;
+    const parsedAmount = Number(editAmount);
+    const createdAt = timestampForExpenseDate(editDate, new Date(editingExpense.createdAt));
+    const nextTitle = editTitle.trim();
+    if (!nextTitle || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || createdAt === null) return;
+
+    const currentExpenses = readJson<ExpenseRecord[]>(STORAGE_EXPENSES);
+    const nextExpenses = (Array.isArray(currentExpenses) ? currentExpenses : expenses).map((expense) =>
+      expense.id === editingExpense.id
+        ? { ...expense, department: editDepartment, title: nextTitle, amount: parsedAmount, amountType: editAmountType,
+            expenseDate: editDate, notes: editNotes.trim() || undefined, createdAt, updatedAt: Date.now() }
+        : expense,
+    );
+    setExpenses(nextExpenses);
+    writeJson(STORAGE_EXPENSES, nextExpenses);
+    setEditingExpense(null);
+  };
+
   const moveExpense = () => {
     if (isDirector) return;
     if (!movingExpense || moveTarget === movingExpense.department) return;
-    const nextExpenses = expenses.map((expense) =>
-      expense.id === movingExpense.id ? { ...expense, department: moveTarget } : expense,
+    const currentExpenses = readJson<ExpenseRecord[]>(STORAGE_EXPENSES);
+    const nextExpenses = (Array.isArray(currentExpenses) ? currentExpenses : expenses).map((expense) =>
+      expense.id === movingExpense.id ? { ...expense, department: moveTarget, updatedAt: Date.now() } : expense,
     );
     setExpenses(nextExpenses);
     writeJson(STORAGE_EXPENSES, nextExpenses);
@@ -276,7 +314,10 @@ export default function ExpensesPage() {
                   <TableCell className="max-w-xs font-medium text-muted-foreground">{expense.notes ?? "-"}</TableCell>
                   <TableCell className="text-right font-black">TSh {expense.amount.toLocaleString()}</TableCell>
                   {!isDirector && (
-                    <TableCell className="text-right">
+                    <TableCell className="text-right whitespace-nowrap">
+                      <Button variant="outline" size="sm" onClick={() => openEditDialog(expense)} className="mr-2 font-black uppercase tracking-widest text-[10px]">
+                        <Pencil className="mr-1 h-3 w-3" /> Edit
+                      </Button>
                       <Button variant="outline" size="sm" onClick={() => openMoveDialog(expense)} className="font-black uppercase tracking-widest text-[10px]">
                         Move
                       </Button>
@@ -295,6 +336,53 @@ export default function ExpensesPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {!isDirector && (
+      <Dialog open={!!editingExpense} onOpenChange={(open) => !open && setEditingExpense(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-black uppercase tracking-tight">Edit Expense</DialogTitle>
+            <DialogDescription>Update this expense request.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="expense-edit-department">Department</Label>
+              <select id="expense-edit-department" className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={editDepartment} onChange={(event) => setEditDepartment(event.target.value as ExpenseDepartment)}>
+                {EXPENSE_DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="expense-edit-type">Type of Amount</Label>
+              <select id="expense-edit-type" className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={editAmountType} onChange={(event) => setEditAmountType(event.target.value as ExpenseAmountType)}>
+                {EXPENSE_AMOUNT_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="expense-edit-title">Title of Request</Label>
+              <Input id="expense-edit-title" value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="expense-edit-date">Expense Date</Label>
+              <Input id="expense-edit-date" type="date" max={toDateInputValue()} value={editDate} onChange={(event) => setEditDate(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="expense-edit-amount">Amount Requested</Label>
+              <Input id="expense-edit-amount" type="number" min="0.01" step="0.01" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="expense-edit-notes">Optional Notes</Label>
+              <Textarea id="expense-edit-notes" value={editNotes} onChange={(event) => setEditNotes(event.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingExpense(null)}>Cancel</Button>
+            <Button onClick={updateExpense} disabled={!editTitle.trim() || !editDate || !editAmount || Number(editAmount) <= 0}>
+              <Save className="mr-2 h-4 w-4" /> Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      )}
 
       {!isDirector && (
       <Dialog open={!!movingExpense} onOpenChange={(open) => !open && setMovingExpense(null)}>

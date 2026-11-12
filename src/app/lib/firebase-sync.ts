@@ -864,6 +864,30 @@ function mergeRecordsByIdWithRemoteWins(localRecords: unknown[], remoteRecords: 
   });
 }
 
+function mergeExpenseRecords(firstRecords: unknown[], secondRecords: unknown[]) {
+  const merged = new Map<string, unknown>();
+  const withoutId: unknown[] = [];
+  for (const record of [...firstRecords, ...secondRecords]) {
+    const id = getRecordId(record);
+    if (!id) {
+      withoutId.push(record);
+      continue;
+    }
+    const previous = merged.get(id) as { updatedAt?: number; createdAt?: number; payoutStatus?: string; paidOutAt?: number; paidOutBy?: string } | undefined;
+    if (!previous) {
+      merged.set(id, record);
+      continue;
+    }
+    const incoming = record as typeof previous;
+    const previousRevision = Number(previous.updatedAt ?? previous.createdAt ?? 0);
+    const incomingRevision = Number(incoming.updatedAt ?? incoming.createdAt ?? 0);
+    const chosen = incomingRevision >= previousRevision ? incoming : previous;
+    const paidOut = incoming.payoutStatus === "paid-out" ? incoming : previous.payoutStatus === "paid-out" ? previous : null;
+    merged.set(id, paidOut ? { ...chosen, payoutStatus: "paid-out", paidOutAt: paidOut.paidOutAt, paidOutBy: paidOut.paidOutBy } : chosen);
+  }
+  return [...merged.values(), ...withoutId];
+}
+
 export function getPosPaymentSyncKey(record: unknown) {
   if (typeof record !== "object" || record === null) return "";
   const payment = record as {
@@ -1066,6 +1090,10 @@ function mergeRemoteValueWithLocalOnlyRecords(key: string, localValue: unknown, 
     return mergePosStateForRemoteApply(localValue, remoteValue);
   }
 
+  if (key === "orange-hotel-expenses" && Array.isArray(localValue) && Array.isArray(remoteValue)) {
+    return mergeExpenseRecords(localValue, remoteValue);
+  }
+
   if (Array.isArray(localValue) && Array.isArray(remoteValue)) {
     return mergeRecordsByIdWithRemoteWins(localValue, remoteValue);
   }
@@ -1086,11 +1114,14 @@ function protectSyncedValueBeforeWrite(key: string, localValue: unknown, remoteV
     return mergeStockEffectArrays(localValue, remoteValue, "manager");
   }
 
+  if (key === "orange-hotel-expenses" && Array.isArray(localValue) && Array.isArray(remoteValue)) {
+    return mergeExpenseRecords(remoteValue, localValue);
+  }
+
   if (
     key === "orange-hotel-website-bookings" ||
     key === "orange-hotel-company-stock" ||
     key === "orange-hotel-live-chat" ||
-    key === "orange-hotel-expenses" ||
     key === "orange-hotel-laundry-records" ||
     key === "orange-hotel-cancelled-tickets" ||
     key === "orange-hotel-barista-waste" ||
